@@ -164,6 +164,15 @@ class MainActivity : Activity() {
             }
             info("Android does not provide access to this app's private login tokens. Payment or recharge actions require support from the provider and your confirmation.")
         } else {
+            if (name.contains("faseyha", ignoreCase = true) || android.net.Uri.parse(value).host?.lowercase()?.let { it == "faseyha.net" || it.endsWith(".faseyha.net") } == true) {
+                button("Faseyha assisted recharge and bill form") {
+                    val uri = android.net.Uri.parse(value)
+                    val host = uri.host?.lowercase()
+                    if (uri.scheme == "https" && (host == "faseyha.net" || host?.endsWith(".faseyha.net") == true))
+                        startActivity(Intent(this, FaseyhaAssistActivity::class.java).putExtra("url", value))
+                    else showMessage("The Faseyha assistant requires a saved https://faseyha.net website. Add that website and select its assistant.")
+                }
+            }
             button("Open website in saved-session browser") { openBrowser(value, name) }
             button("Delete browser cookies and site storage") {
                 AlertDialog.Builder(this).setTitle("Clear browser data?")
