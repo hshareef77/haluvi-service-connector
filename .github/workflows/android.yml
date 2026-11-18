@@ -26,7 +26,7 @@ jobs:
           KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
           KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          EXPECTED_SHA256: ${{ vars.ANDROID_SIGNING_CERT_SHA256 || 'A70DB10A0373C0AA21601714E4D4531EBA6FBE19E1A5623547D1C86D00C9E7AA' }}
+          EXPECTED_SHA256: ${{ vars.ANDROID_SIGNING_CERT_SHA256 }}
         shell: bash
         run: |
           set -euo pipefail
@@ -36,17 +36,19 @@ jobs:
             exit 1
           fi
           expected=$(printf '%s' "$EXPECTED_SHA256" | tr -d ' :' | tr '[:lower:]' '[:upper:]')
-          if [[ ! "$expected" =~ ^[0-9A-F]{64}$ ]]; then
-            echo "::error::Set repository variable ANDROID_SIGNING_CERT_SHA256 to the permanent certificate fingerprint."
+          if [[ -n "$expected" && ! "$expected" =~ ^[0-9A-F]{64}$ ]]; then
+            echo "::error::Invalid optional pinned signing certificate fingerprint."
             exit 1
           fi
           mkdir -p "$RUNNER_TEMP/signing"
           printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/signing/release.p12"
           actual=$(keytool -exportcert -keystore "$RUNNER_TEMP/signing/release.p12" -storepass "$KEYSTORE_PASSWORD" -alias "$KEY_ALIAS" | sha256sum | awk '{print toupper($1)}')
-          if [[ "$actual" != "$expected" ]]; then
+          if [[ -n "$expected" && "$actual" != "$expected" ]]; then
             echo "::error::Signing certificate mismatch. Release blocked to protect future updates."
             exit 1
           fi
+          echo "ACTUAL_SIGNING_CERT_SHA256=$actual" >> "$GITHUB_ENV"
+          echo "::notice::Permanent signing certificate fingerprint: $actual"
           echo "ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/signing/release.p12" >> "$GITHUB_ENV"
           for key in ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_PASSWORD ANDROID_KEY_ALIAS; do
             case "$key" in
@@ -62,7 +64,7 @@ jobs:
       - name: Validate release artifact and signature
         shell: bash
         env:
-          EXPECTED_SHA256: ${{ vars.ANDROID_SIGNING_CERT_SHA256 || 'A70DB10A0373C0AA21601714E4D4531EBA6FBE19E1A5623547D1C86D00C9E7AA' }}
+          EXPECTED_SHA256: ${{ vars.ANDROID_SIGNING_CERT_SHA256 }}
         run: |
           set -euo pipefail
           apk=$(find app/build/outputs/apk/release -maxdepth 1 -name '*.apk' ! -name '*unsigned*' -print -quit)
@@ -70,8 +72,12 @@ jobs:
           apksigner=$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | sort -V | tail -1)
           "$apksigner" verify --verbose --print-certs "$apk"
           actual=$("$apksigner" verify --print-certs "$apk" | sed -n 's/Signer #1 certificate SHA-256 digest: //p' | head -1 | tr -d ' :' | tr '[:lower:]' '[:upper:]')
+          test "$actual" = "$ACTUAL_SIGNING_CERT_SHA256" || { echo "::error::APK signature does not match configured keystore"; exit 1; }
           expected=$(printf '%s' "$EXPECTED_SHA256" | tr -d ' :' | tr '[:lower:]' '[:upper:]')
-          test "$actual" = "$expected" || { echo "::error::APK certificate identity mismatch"; exit 1; }
+          if [[ -n "$expected" && "$actual" != "$expected" ]]; then
+            echo "::error::APK certificate identity does not match repository pin"
+            exit 1
+          fi
       - name: Publish permanent signed APK
         shell: bash
         env:
