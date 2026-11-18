@@ -13,6 +13,7 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.*
+import android.content.DialogInterface
 import org.json.JSONObject
 import java.math.BigDecimal
 
@@ -69,6 +70,16 @@ class FaseyhaAssistActivity : Activity() {
             hint = "Amount MVR"; inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL; setSingleLine(true)
         }
         layout.addView(amount)
+        service.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+            override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
+            override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, position: Int, id: Long) {
+                val packageMode = position == 1
+                amount.isEnabled = !packageMode
+                amount.visibility = if (packageMode) View.GONE else View.VISIBLE
+                if (packageMode) amount.setText("")
+                number.hint = if (position == 2) "Bill account or service ID" else "Seven-digit mobile number"
+            }
+        }
         state = TextView(this).apply { text = "Status: Open the Faseyha dashboard, then navigate to the required form."; textSize = 15f }
         layout.addView(state)
         val primary = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -220,11 +231,18 @@ class FaseyhaAssistActivity : Activity() {
         val money = amount.text.toString().trim()
         val isBill = service.selectedItemPosition == 2
         val validTarget = if (isBill) target.matches(Regex("[A-Za-z0-9-]{5,30}"))
-            else target.matches(Regex("[0-9]{7,15}"))
+            else target.matches(Regex("[0-9]{7}"))
         if (!validTarget) {
             number.error = if (isBill) "Enter a valid account or service number, including any letters"
-                           else "Enter a valid numeric mobile number"
+                           else "Enter a seven-digit Maldives mobile number"
             number.requestFocus()
+            return
+        }
+        if (service.selectedItemPosition == 1) {
+            AlertDialog.Builder(this).setTitle("Prepare package recipient")
+                .setMessage("Recipient: $target\n\nIn the Faseyha website, choose Ooredoo or Dhiraagu and explicitly select a package. The provider controls the package price, GST and total. This assistant fills only the recipient number, not the amount, and never activates a package.")
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton("Fill recipient only") { _, _ -> fillPackageRecipient(target) }.show()
             return
         }
         val parsed = money.toBigDecimalOrNull()
@@ -236,6 +254,31 @@ class FaseyhaAssistActivity : Activity() {
             .setNegativeButton("Cancel", null)
             .setPositiveButton("Fill fields") { _, _ -> fill(target, parsed.toPlainString()) }.show()
     }
+    private fun fillPackageRecipient(target: String) {
+        if (!isTrusted() || Uri.parse(web.url ?: "").path != "/packages") {
+            message("Open the Faseyha Packages page before filling.")
+            return
+        }
+        val js = """(function(value){
+            const fields=Array.from(document.querySelectorAll('input')).filter(x=>x.getClientRects().length>0 && !x.disabled && !x.readOnly && !['hidden','password','submit','button'].includes((x.type||'').toLowerCase()));
+            const label=x=>[(x.labels&&x.labels.length?x.labels[0].innerText:''),x.getAttribute('aria-label'),x.getAttribute('placeholder'),x.name,x.id].filter(Boolean).join(' ').toLowerCase();
+            const choices=fields.filter(x=>/(mobile|phone|number|7xxxxxxx|7x{4,})/.test(label(x)));
+            if(choices.length!==1) return JSON.stringify({ok:false,reason:'Found '+choices.length+' possible recipient fields. Need exactly one.'});
+            const input=choices[0];
+            Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,value);
+            input.dispatchEvent(new Event('input',{bubbles:true}));
+            input.dispatchEvent(new Event('change',{bubbles:true}));
+            return JSON.stringify({ok:input.value===value,reason:input.value===value?'Recipient field matches. Package selection and price are NOT verified.':'The website did not retain the intended recipient.'});
+        })(${JSONObject.quote(target)});"""
+        web.evaluateJavascript(js) { raw ->
+            try {
+                val result = JSONObject(org.json.JSONArray("[$raw]").getString(0))
+                message(if (result.optBoolean("ok")) "Recipient matches the native number. Select operator and package on the Faseyha website and review the final total, including GST, before activating manually. No package purchase was submitted or verified."
+                else "Package recipient not filled: " + result.optString("reason"))
+            } catch (_: Exception) { message("Could not verify the package recipient. No payment was submitted.") }
+        }
+    }
+
     private fun fill(target: String, money: String) {
         if (!isTrusted()) { message("The website changed. Reopen the Faseyha page."); return }
         // Serialize arguments through JSONObject.quote, never interpolate raw user input into JavaScript.
@@ -280,7 +323,7 @@ class FaseyhaAssistActivity : Activity() {
         val guide = "For a first real transaction, use only a number or account you control and an amount you choose within Faseyha's minimum and available wallet balance.\n\n" +
             "1. Select Bill Pay, Recharge, or Package Recharge and open the correct provider page.\n" +
             "2. For Recharge choose the correct operator; for Packages choose the exact package on the provider site.\n" +
-            "3. Enter the target and amount in this assistant. Prepare the form only when the website exposes matching fields.\n" +
+            "3. Enter the target and amount for Recharge/Bill Pay. For packages enter only the recipient; choose the actual package and price in the Faseyha website. Prepare only when the website exposes matching fields.\n" +
             "4. Confirm target, operator, product, actual provider price and possible fees on the Faseyha website.\n" +
             "5. Press the WEBSITE Pay button yourself only if you approve the real transaction.\n" +
             "6. If there is a confirmation or verification step, complete it personally. Check the provider receipt and final status.\n" +
