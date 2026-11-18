@@ -5,6 +5,8 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/android.yml'
+      - 'app/src/**'
+      - 'app/build.gradle.kts'
 permissions:
   contents: write
 jobs:
@@ -90,4 +92,4 @@ jobs:
           tag="v${version}-build${code}-run${GITHUB_RUN_NUMBER}"
           output="$RUNNER_TEMP/Haluvi-Service-Connector-${tag}.apk"
           cp "$apk" "$output"
-          gh release create "$tag" "$output" --target "$GITHUB_SHA" --title "Haluvi Service Connector ${tag}" --notes "Permanently signed APK. Accessible application selector, local service profiles, HTTPS WebView, opt-in accessibility inspection. No integrated third-party wallet transactions."
+          gh release create "$tag" "$output" --target "$GITHUB_SHA" --title "Haluvi Service Connector ${tag}" --notes "Permanently signed APK. Faseyha website-assisted native recharge/bill form preparation, visible DOM-field inspection, manual payment review. No automatic payment submission; no third-party API integration."
