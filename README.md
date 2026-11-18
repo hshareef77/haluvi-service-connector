@@ -1,5 +1,12 @@
 # Haluvi Service Connector
 
+## Version 1.8: integrated operator and package device tests
+- Native Ooredoo/Dhiraagu selection for Recharge and Package Recharge. Apply operator clicks only one exact non-payment operator control; otherwise the user selects in the website.
+- Browse live Faseyha packages using visible card labels. Select an exact uniquely identified package card with a separate confirmation; never press Activate Package or Pay. If detection fails, use the provider website.
+- Read the current provider order summary for recipient, operator, package, price, tax and total; it is not provider payment-result verification.
+- Retains proven Bill Pay form filling, package recipient-only filling, Recharge amount preparation, and local user-reported history.
+- No automatic purchase, unverified refund, or HaluviPay fallback. Payment and package activation must be approved by the user on Faseyha's website. Confirm final processing externally before repeating.
+
 ## v1.7 operator and package UI integration (device test required)
 - Native Ooredoo/Dhiraagu selector for Recharge and Package Recharge; `Apply operator on website — no payment` requests an action only if one exact, visible non-purchase operator control is found, otherwise stops.
 - `Inspect packages and displayed totals` reads candidate package labels from the current provider DOM without activating them or hardcoding package prices.

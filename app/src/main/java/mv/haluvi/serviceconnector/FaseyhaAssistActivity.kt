@@ -13,7 +13,6 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.*
-import android.content.DialogInterface
 import org.json.JSONObject
 import java.math.BigDecimal
 
@@ -55,7 +54,7 @@ class FaseyhaAssistActivity : Activity() {
         val title = TextView(this).apply { text = "Faseyha assisted recharge"; textSize = 22f; if (android.os.Build.VERSION.SDK_INT >= 28) isAccessibilityHeading = true }
         layout.addView(title)
         layout.addView(TextView(this).apply {
-            text = "Choose service, enter number and amount, then select Prepare form. The page opens directly when needed. Check the filled values on the website before paying manually. No automatic payment submission."
+            text = "Choose service and operator, enter recipient and (for Recharge/Bill Pay) amount. Prepare the form and review Faseyha order summary. Package and payment controls remain with Faseyha."
         })
         service = Spinner(this).apply {
             adapter = ArrayAdapter(this@FaseyhaAssistActivity, android.R.layout.simple_spinner_dropdown_item,
@@ -100,9 +99,9 @@ class FaseyhaAssistActivity : Activity() {
         primary.addView(Button(this).apply { text = "Prepare selected service form — do not pay"; minHeight = 56.dp; setOnClickListener { prepareSelectedService() } })
         primary.addView(Button(this).apply { text = "Apply operator on website — no payment"; minHeight = 56.dp; setOnClickListener { applyOperator() } })
         primary.addView(Button(this).apply { text = "Read provider order summary"; minHeight = 56.dp; setOnClickListener { readOrderSummary() } })
-        primary.addView(Button(this).apply { text = "Inspect packages and displayed totals"; minHeight = 56.dp; setOnClickListener { inspectPackageSummary() } })
+        primary.addView(Button(this).apply { text = "Browse packages and select product card"; minHeight = 56.dp; setOnClickListener { inspectPackageSummary() } })
         primary.addView(Button(this).apply { text = "Transaction records and review"; minHeight = 56.dp; setOnClickListener { showRecords() } })
-        primary.addView(Button(this).apply { text = "Small payment test instructions"; minHeight = 56.dp; setOnClickListener { showTestGuide() } })
+        primary.addView(Button(this).apply { text = "Payment test and confirmation guidance"; minHeight = 56.dp; setOnClickListener { showTestGuide() } })
         primary.addView(Button(this).apply { text = "More browser and inspection controls"; minHeight = 56.dp; setOnClickListener {
             actions.visibility = if (actions.visibility == View.GONE) View.VISIBLE else View.GONE
             text = if (actions.visibility == View.VISIBLE) "Hide extra browser controls" else "More browser and inspection controls"
@@ -118,8 +117,7 @@ class FaseyhaAssistActivity : Activity() {
         action("Open dashboard") { openFaseyhaPath("/dashboard") }
         action("Inspect current website form") { inspect() }
         action("Inspect service choices and controls") { inspectChoices() }
-        action("Small transaction test guidance") { showTestGuide() }
-        action("Fill current page form — do not pay") { prepare() }
+                action("Fill current page form — do not pay") { prepare() }
         action("Open Faseyha homepage") { openFaseyhaPath("/") }
         action("Browser back") { if (web.canGoBack()) web.goBack() }
         action("Browser forward") { if (web.canGoForward()) web.goForward() }
@@ -291,7 +289,7 @@ class FaseyhaAssistActivity : Activity() {
     }
 
     private fun fill(target: String, money: String) {
-        if (!isTrusted()) { message("The website changed. Reopen the Faseyha page."); return }
+        if (!isTrusted() || Uri.parse(web.url ?: "").path != selectedPath()) { message("The website changed. Reopen the selected Faseyha page."); return }
         // Serialize arguments through JSONObject.quote, never interpolate raw user input into JavaScript.
         val js = """(function(number,amount){
            const visible=x=>x.getClientRects().length>0 && !x.disabled && !x.readOnly;
@@ -368,33 +366,68 @@ class FaseyhaAssistActivity : Activity() {
 
     private fun inspectPackageSummary() {
         if (!isTrusted() || Uri.parse(web.url ?: "").path != "/packages") {
-            message("Open Package Recharge to inspect the current packages and totals.")
+            message("Open Package Recharge to browse packages.")
             return
         }
-        // Read visible public product descriptions only; no form values or authentication data.
         val js = """(function(){
-            const visible=x=>x.getClientRects().length>0;
-            const sections=Array.from(document.querySelectorAll('article,[role="option"],[role="radio"],button'))
-              .filter(visible).map(x=>(x.innerText||x.getAttribute('aria-label')||'').replace(/\s+/g,' ').trim())
-              .filter(x=>/\b(gb|mb|data|days|minutes|package)\b/i.test(x) && x.length<350 && !/activate package|purchase now|confirm payment/i.test(x))
-              .filter((v,i,a)=>a.indexOf(v)===i).slice(0,25);
-            const heading=Array.from(document.querySelectorAll('h1,h2,h3')).filter(visible)
-              .map(x=>(x.innerText||'').trim()).slice(0,12);
-            const text=(document.body.innerText||'').slice(0,25000);
-            const line=text.split('\n').map(x=>x.trim()).filter(Boolean);
-            const markers=line.filter(x=>/^(Operator|Package|Package price|GST|Total to pay|Total)$/i.test(x)).slice(0,12);
-            return JSON.stringify({path:location.pathname,packages:sections,headings:heading,summaryLabels:markers});
+          const shown=x=>x.getClientRects().length>0 && getComputedStyle(x).visibility!=='hidden';
+          const tidy=x=>(x||'').replace(/\s+/g,' ').trim();
+          const nodes=Array.from(document.querySelectorAll('button,[role="option"],[role="radio"],[role="button"],label,article,[class*="package"],[class*="Package"]'));
+          const found=nodes.filter(shown).map(x=>tidy(x.innerText||x.getAttribute('aria-label')||''))
+            .filter(s=>s.length>=8 && s.length<=200 && /\b(gb|mb|data|minutes|days|package)\b/i.test(s))
+            .filter(s=>!/(activate package|purchase now|confirm payment|pay now|checkout)/i.test(s))
+            .filter((v,i,a)=>a.indexOf(v)===i).slice(0,30);
+          return JSON.stringify({items:found});
         })();"""
         web.evaluateJavascript(js) { raw ->
             try {
                 val obj = JSONObject(org.json.JSONArray("[$raw]").getString(0))
-                val options = obj.getJSONArray("packages")
-                val text = StringBuilder("Visible package candidates: " + options.length())
-                for (i in 0 until options.length()) text.append("\n" + (i + 1) + ". " + options.getString(i))
-                text.append("\n\nThe provider controls the actual package and price. Select the package on the website. Review its order summary, GST and total before activation. This inspection does not select or purchase packages.")
-                message(text.toString())
-            } catch (_: Exception) { message("No readable package options could be extracted. Use the Faseyha website package selector.") }
+                val arr = obj.getJSONArray("items")
+                if (arr.length() == 0) {
+                    message("No unambiguous readable package cards found. Choose a package on Faseyha's website and review its summary.")
+                    return@evaluateJavascript
+                }
+                val choices = Array(arr.length()) { i -> arr.getString(i) }
+                AlertDialog.Builder(this).setTitle("Packages visible on Faseyha")
+                    .setItems(choices) { _, i -> selectPackageCard(choices[i]) }
+                    .setNegativeButton("Cancel", null).show()
+            } catch (_: Exception) {
+                message("Could not read package choices. Use the Faseyha website selector.")
+            }
         }
+    }
+
+    private fun selectPackageCard(label: String) {
+        if (!isTrusted() || Uri.parse(web.url ?: "").path != "/packages") {
+            message("Page changed. Reopen Packages.")
+            return
+        }
+        AlertDialog.Builder(this).setTitle("Select package?")
+            .setMessage(label + "\n\nThis only attempts to select a product card, never Activate Package or Pay. Review final operator, recipient, package and price on Faseyha afterward.")
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Select card") { _, _ ->
+                val js = """(function(wanted){
+                  const tidy=x=>(x||'').replace(/\s+/g,' ').trim();
+                  const shown=x=>x.getClientRects().length>0 && getComputedStyle(x).visibility!=='hidden';
+                  const nodes=Array.from(document.querySelectorAll('button,[role="option"],[role="radio"],[role="button"],label,article,[class*="package"],[class*="Package"]'));
+                  const matches=nodes.filter(shown).filter(x=>tidy(x.innerText||x.getAttribute('aria-label')||'')===wanted)
+                    .filter(x=>!/(activate package|purchase now|confirm payment|pay now|checkout)/i.test(tidy(x.innerText)));
+                  if(matches.length!==1) return JSON.stringify({reason:'Found '+matches.length+' exact matching cards. Select directly on website if ambiguous.'});
+                  const node=matches[0];
+                  if(node.matches('form,[type="submit"],a[href]') || node.querySelector('button[type="submit"],a[href*="checkout"]'))
+                    return JSON.stringify({reason:'Potential payment control inside card. Selection blocked.'});
+                  node.click();
+                  return JSON.stringify({reason:'Package card selection requested. Check provider summary and price.'});
+                })(${JSONObject.quote(label)});"""
+                web.evaluateJavascript(js) { raw ->
+                    try {
+                        val obj=JSONObject(org.json.JSONArray("[$raw]").getString(0))
+                        message(obj.optString("reason") + "\n\nThis is not a purchase or provider verification.")
+                    } catch (_: Exception) {
+                        message("Could not verify package selection. Check the Faseyha website.")
+                    }
+                }
+            }.show()
     }
 
     private fun readOrderSummary() {
