@@ -62,7 +62,7 @@ jobs:
       - name: Validate release artifact and signature
         shell: bash
         env:
-          EXPECTED_SHA256: ${{ vars.ANDROID_SIGNING_CERT_SHA256 }}
+          EXPECTED_SHA256: ${{ vars.ANDROID_SIGNING_CERT_SHA256 || 'A70DB10A0373C0AA21601714E4D4531EBA6FBE19E1A5623547D1C86D00C9E7AA' }}
         run: |
           set -euo pipefail
           apk=$(find app/build/outputs/apk/release -maxdepth 1 -name '*.apk' ! -name '*unsigned*' -print -quit)
