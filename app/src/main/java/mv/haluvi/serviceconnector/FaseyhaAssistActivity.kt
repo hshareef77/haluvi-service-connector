@@ -29,6 +29,7 @@ class FaseyhaAssistActivity : Activity() {
     private lateinit var number: EditText
     private lateinit var amount: EditText
     private lateinit var service: Spinner
+    private lateinit var operator: Spinner
     private lateinit var state: TextView
     private var homeUrl: String = "https://faseyha.net"
     private var prepared = false
@@ -62,6 +63,12 @@ class FaseyhaAssistActivity : Activity() {
             contentDescription = "Select Faseyha service to prepare"
         }
         layout.addView(service)
+        operator = Spinner(this).apply {
+            adapter = ArrayAdapter(this@FaseyhaAssistActivity, android.R.layout.simple_spinner_dropdown_item,
+                listOf("Ooredoo", "Dhiraagu"))
+            contentDescription = "Choose preferred operator for Recharge or Packages"
+        }
+        layout.addView(operator)
         number = EditText(this).apply {
             hint = "Mobile number or bill account ID"; inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS; setSingleLine(true)
         }
@@ -73,6 +80,7 @@ class FaseyhaAssistActivity : Activity() {
         service.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
             override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
             override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, position: Int, id: Long) {
+                operator.visibility = if (position == 2) View.GONE else View.VISIBLE
                 val packageMode = position == 1
                 amount.isEnabled = !packageMode
                 amount.visibility = if (packageMode) View.GONE else View.VISIBLE
@@ -90,6 +98,8 @@ class FaseyhaAssistActivity : Activity() {
             })
         }
         primary.addView(Button(this).apply { text = "Prepare selected service form — do not pay"; minHeight = 56.dp; setOnClickListener { prepareSelectedService() } })
+        primary.addView(Button(this).apply { text = "Apply operator on website — no payment"; minHeight = 56.dp; setOnClickListener { applyOperator() } })
+        primary.addView(Button(this).apply { text = "Inspect packages and displayed totals"; minHeight = 56.dp; setOnClickListener { inspectPackageSummary() } })
         primary.addView(Button(this).apply { text = "Transaction records and review"; minHeight = 56.dp; setOnClickListener { showRecords() } })
         primary.addView(Button(this).apply { text = "Small payment test instructions"; minHeight = 56.dp; setOnClickListener { showTestGuide() } })
         primary.addView(Button(this).apply { text = "More browser and inspection controls"; minHeight = 56.dp; setOnClickListener {
@@ -316,6 +326,73 @@ class FaseyhaAssistActivity : Activity() {
                 state.text = if (ok) "Fields match the requested details in the current website form. Review the site and submit manually if correct. Transaction not completed or verified." else "Form not prepared: ${data.optString("reason")}. Check the current service form and inspect its fields."
                 message(state.text.toString())
             } catch (e: Exception) { message("Unable to verify form filling. Do not assume the fields were completed.") }
+        }
+    }
+
+    private fun applyOperator() {
+        if (service.selectedItemPosition == 2) { message("Bill Pay operator selection must be made on the website."); return }
+        if (!isTrusted() || Uri.parse(web.url ?: "").path != selectedPath()) {
+            message("Open the selected Faseyha service page before choosing an operator.")
+            return
+        }
+        val name = operator.selectedItem.toString()
+        AlertDialog.Builder(this).setTitle("Apply operator $name?")
+            .setMessage("Only a uniquely identified Ooredoo or Dhiraagu operator control may be activated. This cannot click Pay, Recharge, or Activate Package. Review the website operator and total afterward.")
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Apply") { _, _ ->
+                val js = """(function(name){
+                   const visible=x=>x.getClientRects().length>0 && getComputedStyle(x).visibility!=='hidden';
+                   const normalized=t=>(t||'').replace(/\\s+/g,' ').trim().toLowerCase();
+                   const expected=normalized(name);
+                   const nodes=Array.from(document.querySelectorAll('button,[role="tab"],[role="radio"],[role="button"],label,input[type="radio"]'))
+                       .filter(visible).filter(x=>!x.disabled);
+                   const label=x=>normalized([x.getAttribute('aria-label'),x.getAttribute('title'),
+                      x.innerText,x.getAttribute('value')].filter(Boolean).join(' '));
+                   const safe=x=>!/(pay|recharge now|activate|submit|purchase|checkout|confirm)/.test(label(x));
+                   const matches=nodes.filter(x=>safe(x) && (label(x)===expected ||
+                        label(x)===expected+' raastas' || label(x)===expected+' reload'));
+                   if(matches.length!==1) return JSON.stringify({ok:false,reason:'Found '+matches.length+' exact matching operator controls. Select operator manually on website if none or ambiguous.'});
+                   matches[0].click();
+                   return JSON.stringify({ok:true,reason:'Operator control activated. Verify operator selection in the actual provider order summary.'});
+                 })(${JSONObject.quote(name)});"""
+                web.evaluateJavascript(js) { raw ->
+                    try {
+                        val result = JSONObject(org.json.JSONArray("[$raw]").getString(0))
+                        state.text = if (result.optBoolean("ok")) "Operator selection requested. Verify the operator in the Faseyha order summary." else result.optString("reason")
+                        message(state.text.toString())
+                    } catch (_: Exception) { message("Operator selection could not be confirmed. Inspect the provider page manually.") }
+                }
+            }.show()
+    }
+
+    private fun inspectPackageSummary() {
+        if (!isTrusted() || Uri.parse(web.url ?: "").path != "/packages") {
+            message("Open Package Recharge to inspect the current packages and totals.")
+            return
+        }
+        // Read visible public product descriptions only; no form values or authentication data.
+        val js = """(function(){
+            const visible=x=>x.getClientRects().length>0;
+            const sections=Array.from(document.querySelectorAll('article,[role="option"],[role="radio"],button'))
+              .filter(visible).map(x=>(x.innerText||x.getAttribute('aria-label')||'').replace(/\\s+/g,' ').trim())
+              .filter(x=>/\\b(gb|mb|data|days|minutes|package)\\b/i.test(x) && x.length<350 && !/activate package|purchase now|confirm payment/i.test(x))
+              .filter((v,i,a)=>a.indexOf(v)===i).slice(0,25);
+            const heading=Array.from(document.querySelectorAll('h1,h2,h3')).filter(visible)
+              .map(x=>(x.innerText||'').trim()).slice(0,12);
+            const text=(document.body.innerText||'').slice(0,25000);
+            const line=text.split('\\n').map(x=>x.trim()).filter(Boolean);
+            const markers=line.filter(x=>/^(Operator|Package|Package price|GST|Total to pay|Total)$/i.test(x)).slice(0,12);
+            return JSON.stringify({path:location.pathname,packages:sections,headings:heading,summaryLabels:markers});
+        })();"""
+        web.evaluateJavascript(js) { raw ->
+            try {
+                val obj = JSONObject(org.json.JSONArray("[$raw]").getString(0))
+                val options = obj.getJSONArray("packages")
+                val text = StringBuilder("Visible package candidates: " + options.length())
+                for (i in 0 until options.length()) text.append("\\n" + (i + 1) + ". " + options.getString(i))
+                text.append("\\n\\nThe provider controls the actual package and price. Select the package on the website. Review its order summary, GST and total before activation. This inspection does not select or purchase packages.")
+                message(text.toString())
+            } catch (_: Exception) { message("No readable package options could be extracted. Use the Faseyha website package selector.") }
         }
     }
 
