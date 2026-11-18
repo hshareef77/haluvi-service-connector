@@ -5,6 +5,7 @@ import android.app.AlertDialog
 import android.os.Bundle
 import android.net.Uri
 import android.text.InputType
+import android.view.View
 import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.WebChromeClient
@@ -30,6 +31,7 @@ class FaseyhaAssistActivity : Activity() {
     private lateinit var state: TextView
     private var homeUrl: String = "https://faseyha.net"
     private var prepared = false
+    private var lastPreparedSignature: String? = null
     private val allowedHost = "faseyha.net"
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -70,13 +72,18 @@ class FaseyhaAssistActivity : Activity() {
         state = TextView(this).apply { text = "Status: Open the Faseyha dashboard, then navigate to the required form."; textSize = 15f }
         layout.addView(state)
         val primary = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        val actions = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val actions = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; visibility = View.GONE }
         fun action(label: String, work: () -> Unit) {
             actions.addView(Button(this).apply {
                 text = label; minHeight = 48.dp; setOnClickListener { work() }
             })
         }
         primary.addView(Button(this).apply { text = "Prepare selected service form — do not pay"; minHeight = 56.dp; setOnClickListener { prepareSelectedService() } })
+        primary.addView(Button(this).apply { text = "Transaction records and review"; minHeight = 56.dp; setOnClickListener { showRecords() } })
+        primary.addView(Button(this).apply { text = "More browser and inspection controls"; minHeight = 56.dp; setOnClickListener {
+            actions.visibility = if (actions.visibility == View.GONE) View.VISIBLE else View.GONE
+            text = if (actions.visibility == View.VISIBLE) "Hide extra browser controls" else "More browser and inspection controls"
+        } })
         action("Open selected service") {
             val path = when (service.selectedItemPosition) {
                 0 -> "/recharge"
@@ -110,6 +117,7 @@ class FaseyhaAssistActivity : Activity() {
                 override fun onPageFinished(view: WebView, url: String) {
                     CookieManager.getInstance().flush()
                     prepared = false
+                    lastPreparedSignature = null
                     if (isTrusted()) state.text = if (Uri.parse(url).path.isNullOrBlank() || Uri.parse(url).path == "/") "Faseyha homepage loaded. Open Dashboard and a payment form in the website below before inspecting." else "Faseyha page loaded. Open the relevant number and amount form, then inspect."
                     else state.text = "This page is outside faseyha.net. The native field assistant is disabled."
                 }
@@ -151,6 +159,7 @@ class FaseyhaAssistActivity : Activity() {
             return
         }
         prepared = false
+        lastPreparedSignature = null
         val destination = "https://faseyha.net" + path
         state.text = "Opening Faseyha " + (if (path == "/") "homepage" else path.removePrefix("/")) + "."
         web.loadUrl(destination)
@@ -251,6 +260,13 @@ class FaseyhaAssistActivity : Activity() {
                 val data = JSONObject(org.json.JSONArray("[$raw]").getString(0))
                 val ok = data.optBoolean("ok")
                 prepared = ok
+                if (ok) {
+                    val signature = listOf(service.selectedItem.toString(), target, money, web.url ?: "").joinToString("|")
+                    if (signature != lastPreparedSignature) {
+                        FaseyhaLedger.create(this, service.selectedItem.toString(), target, money)
+                        lastPreparedSignature = signature
+                    }
+                }
                 state.text = if (ok) "Fields match the requested details in the current website form. Review the site and submit manually if correct. Transaction not completed or verified." else "Form not prepared: ${data.optString("reason")}. Check the current service form and inspect its fields."
                 message(state.text.toString())
             } catch (e: Exception) { message("Unable to verify form filling. Do not assume the fields were completed.") }
