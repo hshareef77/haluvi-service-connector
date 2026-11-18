@@ -99,6 +99,7 @@ class FaseyhaAssistActivity : Activity() {
         }
         primary.addView(Button(this).apply { text = "Prepare selected service form — do not pay"; minHeight = 56.dp; setOnClickListener { prepareSelectedService() } })
         primary.addView(Button(this).apply { text = "Apply operator on website — no payment"; minHeight = 56.dp; setOnClickListener { applyOperator() } })
+        primary.addView(Button(this).apply { text = "Read provider order summary"; minHeight = 56.dp; setOnClickListener { readOrderSummary() } })
         primary.addView(Button(this).apply { text = "Inspect packages and displayed totals"; minHeight = 56.dp; setOnClickListener { inspectPackageSummary() } })
         primary.addView(Button(this).apply { text = "Transaction records and review"; minHeight = 56.dp; setOnClickListener { showRecords() } })
         primary.addView(Button(this).apply { text = "Small payment test instructions"; minHeight = 56.dp; setOnClickListener { showTestGuide() } })
@@ -342,7 +343,7 @@ class FaseyhaAssistActivity : Activity() {
             .setPositiveButton("Apply") { _, _ ->
                 val js = """(function(name){
                    const visible=x=>x.getClientRects().length>0 && getComputedStyle(x).visibility!=='hidden';
-                   const normalized=t=>(t||'').replace(/\\s+/g,' ').trim().toLowerCase();
+                   const normalized=t=>(t||'').replace(/\s+/g,' ').trim().toLowerCase();
                    const expected=normalized(name);
                    const nodes=Array.from(document.querySelectorAll('button,[role="tab"],[role="radio"],[role="button"],label,input[type="radio"]'))
                        .filter(visible).filter(x=>!x.disabled);
@@ -374,13 +375,13 @@ class FaseyhaAssistActivity : Activity() {
         val js = """(function(){
             const visible=x=>x.getClientRects().length>0;
             const sections=Array.from(document.querySelectorAll('article,[role="option"],[role="radio"],button'))
-              .filter(visible).map(x=>(x.innerText||x.getAttribute('aria-label')||'').replace(/\\s+/g,' ').trim())
-              .filter(x=>/\\b(gb|mb|data|days|minutes|package)\\b/i.test(x) && x.length<350 && !/activate package|purchase now|confirm payment/i.test(x))
+              .filter(visible).map(x=>(x.innerText||x.getAttribute('aria-label')||'').replace(/\s+/g,' ').trim())
+              .filter(x=>/\b(gb|mb|data|days|minutes|package)\b/i.test(x) && x.length<350 && !/activate package|purchase now|confirm payment/i.test(x))
               .filter((v,i,a)=>a.indexOf(v)===i).slice(0,25);
             const heading=Array.from(document.querySelectorAll('h1,h2,h3')).filter(visible)
               .map(x=>(x.innerText||'').trim()).slice(0,12);
             const text=(document.body.innerText||'').slice(0,25000);
-            const line=text.split('\\n').map(x=>x.trim()).filter(Boolean);
+            const line=text.split('\n').map(x=>x.trim()).filter(Boolean);
             const markers=line.filter(x=>/^(Operator|Package|Package price|GST|Total to pay|Total)$/i.test(x)).slice(0,12);
             return JSON.stringify({path:location.pathname,packages:sections,headings:heading,summaryLabels:markers});
         })();"""
@@ -389,10 +390,31 @@ class FaseyhaAssistActivity : Activity() {
                 val obj = JSONObject(org.json.JSONArray("[$raw]").getString(0))
                 val options = obj.getJSONArray("packages")
                 val text = StringBuilder("Visible package candidates: " + options.length())
-                for (i in 0 until options.length()) text.append("\\n" + (i + 1) + ". " + options.getString(i))
-                text.append("\\n\\nThe provider controls the actual package and price. Select the package on the website. Review its order summary, GST and total before activation. This inspection does not select or purchase packages.")
+                for (i in 0 until options.length()) text.append("\n" + (i + 1) + ". " + options.getString(i))
+                text.append("\n\nThe provider controls the actual package and price. Select the package on the website. Review its order summary, GST and total before activation. This inspection does not select or purchase packages.")
                 message(text.toString())
             } catch (_: Exception) { message("No readable package options could be extracted. Use the Faseyha website package selector.") }
+        }
+    }
+
+    private fun readOrderSummary() {
+        if (!isTrusted() || Uri.parse(web.url ?: "").path != selectedPath()) {
+            message("Open the selected Faseyha service page and its order summary first.")
+            return
+        }
+        val js = """(function(){
+          const txt=(document.body.innerText||'');
+          const index=txt.toLowerCase().lastIndexOf('order summary');
+          if(index<0) return JSON.stringify({found:false});
+          const part=txt.slice(index,index+1500).replace(/\\s+/g,' ').trim();
+          return JSON.stringify({found:true,summary:part.slice(0,900)});
+        })();"""
+        web.evaluateJavascript(js) { raw ->
+            try {
+                val obj = JSONObject(org.json.JSONArray("[$raw]").getString(0))
+                if (!obj.optBoolean("found")) message("No readable order summary is visible on this provider page.")
+                else message("Faseyha website order summary (not a transaction result):\\n" + obj.optString("summary") + "\\n\\nVerify operator, recipient, selected product, tax and total on the provider page. Do not rely on this text alone to authorize payment.")
+            } catch (_: Exception) { message("Unable to read the provider order summary.") }
         }
     }
 
