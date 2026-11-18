@@ -3,10 +3,8 @@ package mv.haluvi.serviceconnector
 import android.app.Activity
 import android.app.AlertDialog
 import android.os.Bundle
-import android.graphics.Color
 import android.net.Uri
 import android.text.InputType
-import android.view.View
 import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.WebChromeClient
@@ -31,6 +29,7 @@ class FaseyhaAssistActivity : Activity() {
     private lateinit var service: Spinner
     private lateinit var state: TextView
     private var homeUrl: String = "https://faseyha.net"
+    private var prepared = false
     private val allowedHost = "faseyha.net"
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -52,7 +51,7 @@ class FaseyhaAssistActivity : Activity() {
         val title = TextView(this).apply { text = "Faseyha assisted recharge"; textSize = 22f; if (android.os.Build.VERSION.SDK_INT >= 28) isAccessibilityHeading = true }
         layout.addView(title)
         layout.addView(TextView(this).apply {
-            text = "Choose a service, then select Open selected service. The website will open its direct HTTPS page using your existing permitted session. Enter details, inspect its form, and fill when supported. The app never submits a payment."
+            text = "Choose service, enter number and amount, then select Prepare form. The page opens directly when needed. Check the filled values on the website before paying manually. No automatic payment submission."
         })
         service = Spinner(this).apply {
             adapter = ArrayAdapter(this@FaseyhaAssistActivity, android.R.layout.simple_spinner_dropdown_item,
@@ -70,12 +69,14 @@ class FaseyhaAssistActivity : Activity() {
         layout.addView(amount)
         state = TextView(this).apply { text = "Status: Open the Faseyha dashboard, then navigate to the required form."; textSize = 15f }
         layout.addView(state)
+        val primary = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val actions = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         fun action(label: String, work: () -> Unit) {
             actions.addView(Button(this).apply {
                 text = label; minHeight = 48.dp; setOnClickListener { work() }
             })
         }
+        primary.addView(Button(this).apply { text = "Prepare selected service form — do not pay"; minHeight = 56.dp; setOnClickListener { prepareSelectedService() } })
         action("Open selected service") {
             val path = when (service.selectedItemPosition) {
                 0 -> "/recharge"
@@ -86,7 +87,7 @@ class FaseyhaAssistActivity : Activity() {
         }
         action("Open dashboard") { openFaseyhaPath("/dashboard") }
         action("Inspect current website form") { inspect() }
-        action("Fill visible form fields — do not pay") { prepare() }
+        action("Fill current page form — do not pay") { prepare() }
         action("Open Faseyha homepage") { openFaseyhaPath("/") }
         action("Browser back") { if (web.canGoBack()) web.goBack() }
         action("Browser forward") { if (web.canGoForward()) web.goForward() }
@@ -108,13 +109,15 @@ class FaseyhaAssistActivity : Activity() {
                 }
                 override fun onPageFinished(view: WebView, url: String) {
                     CookieManager.getInstance().flush()
+                    prepared = false
                     if (isTrusted()) state.text = if (Uri.parse(url).path.isNullOrBlank() || Uri.parse(url).path == "/") "Faseyha homepage loaded. Open Dashboard and a payment form in the website below before inspecting." else "Faseyha page loaded. Open the relevant number and amount form, then inspect."
                     else state.text = "This page is outside faseyha.net. The native field assistant is disabled."
                 }
             }
         }
         CookieManager.getInstance().setAcceptCookie(true)
-        layout.addView(TextView(this).apply { text = "Direct navigation: Dashboard /dashboard; Recharge /recharge; Packages /packages; Bill Pay /bills. These paths are based on your observed browser links. Login or provider-side changes may still require interaction. The destination website is shown below." })
+        layout.addView(primary)
+        layout.addView(TextView(this).apply { text = "Provider website. If preparing opens a different service page, allow it to load and activate Prepare form again. The website may require further service selections. Additional browser and inspection controls are below." })
         layout.addView(web, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 460.dp))
         layout.addView(actions)
         val scroller = ScrollView(this).apply { isFillViewport = true; addView(layout) }
@@ -122,11 +125,32 @@ class FaseyhaAssistActivity : Activity() {
         web.loadUrl(homeUrl)
     }
 
+    private fun selectedPath(): String = when (service.selectedItemPosition) {
+        0 -> "/recharge"
+        1 -> "/packages"
+        else -> "/bills"
+    }
+
+    private fun prepareSelectedService() {
+        val expected = selectedPath()
+        if (!isTrusted()) {
+            message("This page is outside Faseyha. Open your selected service again.")
+            return
+        }
+        if (Uri.parse(web.url ?: "").path != expected) {
+            openFaseyhaPath(expected)
+            state.text = "Service page opened. After it loads, select Prepare form again. No payment was submitted."
+            return
+        }
+        prepare()
+    }
+
     private fun openFaseyhaPath(path: String) {
         if (path !in setOf("/", "/dashboard", "/recharge", "/packages", "/bills")) {
             message("Unsupported service path.")
             return
         }
+        prepared = false
         val destination = "https://faseyha.net" + path
         state.text = "Opening Faseyha " + (if (path == "/") "homepage" else path.removePrefix("/")) + "."
         web.loadUrl(destination)
@@ -176,6 +200,10 @@ class FaseyhaAssistActivity : Activity() {
     }
     private fun prepare() {
         if (!isTrusted()) { message("You can only fill fields on the Faseyha website."); return }
+        if (Uri.parse(web.url ?: "").path != selectedPath()) {
+            message("The website is not on the selected service page. Use Prepare selected service form to open it first.")
+            return
+        }
         val target = number.text.toString().trim()
         val money = amount.text.toString().trim()
         val isBill = service.selectedItemPosition == 2
@@ -215,13 +243,15 @@ class FaseyhaAssistActivity : Activity() {
               x.dispatchEvent(new Event('change',{bubbles:true}));
            }
            update(num[0],number);update(amt[0],amount);
-           return JSON.stringify({ok:true,reason:'Filled two fields. Review the website. No payment submitted.'});
+           const verified = num[0].value === number && amt[0].value === amount;
+           return JSON.stringify({ok:verified,reason:verified?'Both website fields match the requested values. No payment submitted.':'Website altered a value; inspect and correct manually.'});
          })(${JSONObject.quote(target)},${JSONObject.quote(money)});"""
         web.evaluateJavascript(js) { raw ->
             try {
                 val data = JSONObject(org.json.JSONArray("[$raw]").getString(0))
                 val ok = data.optBoolean("ok")
-                state.text = if (ok) "Fields prepared. Review the website and submit manually if correct." else "Form not filled: ${data.optString("reason")}. First open the correct Faseyha payment form in the website below, then inspect its fields."
+                prepared = ok
+                state.text = if (ok) "Fields match the requested details in the current website form. Review the site and submit manually if correct. Transaction not completed or verified." else "Form not prepared: ${data.optString("reason")}. Check the current service form and inspect its fields."
                 message(state.text.toString())
             } catch (e: Exception) { message("Unable to verify form filling. Do not assume the fields were completed.") }
         }
