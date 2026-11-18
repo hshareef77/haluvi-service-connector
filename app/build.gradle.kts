@@ -5,7 +5,7 @@ plugins {
 android {
     namespace = "mv.haluvi.serviceconnector"
     compileSdk = 35
-    defaultConfig { applicationId = "mv.haluvi.serviceconnector"; minSdk = 26; targetSdk = 35; versionCode = 1; versionName = "1.0" }
+    defaultConfig { applicationId = "mv.haluvi.serviceconnector"; minSdk = 26; targetSdk = 35; versionCode = 2; versionName = "1.1" }
 
     val keyStorePath = System.getenv("ANDROID_KEYSTORE_PATH")
     if (!keyStorePath.isNullOrBlank()) {
