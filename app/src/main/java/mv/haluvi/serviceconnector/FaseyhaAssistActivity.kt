@@ -272,6 +272,70 @@ class FaseyhaAssistActivity : Activity() {
             } catch (e: Exception) { message("Unable to verify form filling. Do not assume the fields were completed.") }
         }
     }
+
+    private fun showRecords() {
+        val rows = FaseyhaLedger.list(this)
+        if (rows.length() == 0) {
+            message("No transaction preparations recorded yet. These records do not prove a payment.")
+            return
+        }
+        val labels = Array(rows.length()) { index ->
+            val r = rows.getJSONObject(index)
+            r.optString("service") + " — " + r.optString("target") +
+                " — MVR " + r.optString("amount") + " — " + r.optString("status")
+        }
+        AlertDialog.Builder(this).setTitle("Local preparation and review history")
+            .setItems(labels) { _, selected -> showRecord(rows.getJSONObject(selected).optString("id")) }
+            .setNeutralButton("Clear records") { _, _ ->
+                AlertDialog.Builder(this).setTitle("Clear all local records?")
+                    .setMessage("This only deletes local notes, not provider transaction history.")
+                    .setPositiveButton("Delete") { _, _ -> FaseyhaLedger.clear(this) }
+                    .setNegativeButton("Cancel", null).show()
+            }.setNegativeButton("Close", null).show()
+    }
+
+    private fun showRecord(id: String) {
+        val rows = FaseyhaLedger.list(this)
+        var record: JSONObject? = null
+        for (i in 0 until rows.length()) {
+            val item = rows.getJSONObject(i)
+            if (item.optString("id") == id) { record = item; break }
+        }
+        if (record == null) { message("Record was not found."); return }
+        val details = record.optString("service") + "\nTarget: " + record.optString("target") +
+            "\nMVR " + record.optString("amount") + "\nStatus: " + record.optString("status") +
+            "\nNote: " + record.optString("note") +
+            "\n\nThis record contains only local preparation and user-reported observations. It is not provider-confirmed payment evidence."
+        AlertDialog.Builder(this).setTitle("Faseyha transaction record").setMessage(details)
+            .setPositiveButton("Update observation") { _, _ -> updateRecord(id) }
+            .setNeutralButton("Delete record") { _, _ ->
+                AlertDialog.Builder(this).setTitle("Delete this local record?")
+                    .setPositiveButton("Delete") { _, _ -> FaseyhaLedger.delete(this, id) }
+                    .setNegativeButton("Cancel", null).show()
+            }.setNegativeButton("Close", null).show()
+    }
+
+    private fun updateRecord(id: String) {
+        val options = arrayOf("Prepared", "User reports submitted", "Needs review", "User reports completed", "User reports failed")
+        AlertDialog.Builder(this).setTitle("Choose observed status")
+            .setItems(options) { _, choice ->
+                val note = EditText(this).apply {
+                    hint = "Optional receipt reference or note. Never include a password."
+                    inputType = InputType.TYPE_CLASS_TEXT
+                    setSingleLine(false)
+                    maxLines = 3
+                }
+                AlertDialog.Builder(this).setTitle(options[choice])
+                    .setMessage("Manual note only. No provider status has been verified; do not use this as proof of successful HaluviPay fulfillment.")
+                    .setView(note)
+                    .setPositiveButton("Save observation") { _, _ ->
+                        if (FaseyhaLedger.update(this, id, options[choice], note.text.toString().trim()))
+                            message("Saved locally as a user-reported observation, not a verified provider result.")
+                        else message("Could not save the observation.")
+                    }.setNegativeButton("Cancel", null).show()
+            }.setNegativeButton("Cancel", null).show()
+    }
+
     override fun onBackPressed() {
         if (::web.isInitialized && web.canGoBack()) web.goBack() else super.onBackPressed()
     }
