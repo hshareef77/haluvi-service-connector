@@ -26,7 +26,7 @@ jobs:
           KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
           KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          EXPECTED_SHA256: ${{ vars.ANDROID_SIGNING_CERT_SHA256 }}
+          EXPECTED_SHA256: ${{ vars.ANDROID_SIGNING_CERT_SHA256 || 'E34FF05EC7F0D0CE21BCAC41D1CD5CB8C65E95186043B124CE33917136E88F25' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -64,14 +64,14 @@ jobs:
       - name: Validate release artifact and signature
         shell: bash
         env:
-          EXPECTED_SHA256: ${{ vars.ANDROID_SIGNING_CERT_SHA256 }}
+          EXPECTED_SHA256: ${{ vars.ANDROID_SIGNING_CERT_SHA256 || 'E34FF05EC7F0D0CE21BCAC41D1CD5CB8C65E95186043B124CE33917136E88F25' }}
         run: |
           set -euo pipefail
           apk=$(find app/build/outputs/apk/release -maxdepth 1 -name '*.apk' ! -name '*unsigned*' -print -quit)
           test -n "$apk" && test -s "$apk"
           apksigner=$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | sort -V | tail -1)
           "$apksigner" verify --verbose --print-certs "$apk"
-          actual=$("$apksigner" verify --print-certs "$apk" | sed -n 's/Signer #1 certificate SHA-256 digest: //p' | head -1 | tr -d ' :' | tr '[:lower:]' '[:upper:]')
+          actual=$("$apksigner" verify --print-certs "$apk" | awk '/certificate SHA-256 digest:/ {print $NF; exit}' | tr -d ' :' | tr '[:lower:]' '[:upper:]')
           test "$actual" = "$ACTUAL_SIGNING_CERT_SHA256" || { echo "::error::APK signature does not match configured keystore"; exit 1; }
           expected=$(printf '%s' "$EXPECTED_SHA256" | tr -d ' :' | tr '[:lower:]' '[:upper:]')
           if [[ -n "$expected" && "$actual" != "$expected" ]]; then
