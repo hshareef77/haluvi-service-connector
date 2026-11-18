@@ -406,14 +406,14 @@ class FaseyhaAssistActivity : Activity() {
           const txt=(document.body.innerText||'');
           const index=txt.toLowerCase().lastIndexOf('order summary');
           if(index<0) return JSON.stringify({found:false});
-          const part=txt.slice(index,index+1500).replace(/\\s+/g,' ').trim();
+          const part=txt.slice(index,index+1500).replace(/\s+/g,' ').trim();
           return JSON.stringify({found:true,summary:part.slice(0,900)});
         })();"""
         web.evaluateJavascript(js) { raw ->
             try {
                 val obj = JSONObject(org.json.JSONArray("[$raw]").getString(0))
                 if (!obj.optBoolean("found")) message("No readable order summary is visible on this provider page.")
-                else message("Faseyha website order summary (not a transaction result):\\n" + obj.optString("summary") + "\\n\\nVerify operator, recipient, selected product, tax and total on the provider page. Do not rely on this text alone to authorize payment.")
+                else message("Faseyha website order summary (not a transaction result):\n" + obj.optString("summary") + "\n\nVerify operator, recipient, selected product, tax and total on the provider page. Do not rely on this text alone to authorize payment.")
             } catch (_: Exception) { message("Unable to read the provider order summary.") }
         }
     }
