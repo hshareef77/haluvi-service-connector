@@ -52,7 +52,7 @@ class FaseyhaAssistActivity : Activity() {
         val title = TextView(this).apply { text = "Faseyha assisted recharge"; textSize = 22f; if (android.os.Build.VERSION.SDK_INT >= 28) isAccessibilityHeading = true }
         layout.addView(title)
         layout.addView(TextView(this).apply {
-            text = "Step 1: Navigate in the website below: Open Dashboard, choose Recharge or Bill Pay, and open its number and amount form. Step 2: Enter details above. Step 3: Inspect and fill. No payment is submitted automatically."
+            text = "Choose a service, then select Open selected service. The website will open its direct HTTPS page using your existing permitted session. Enter details, inspect its form, and fill when supported. The app never submits a payment."
         })
         service = Spinner(this).apply {
             adapter = ArrayAdapter(this@FaseyhaAssistActivity, android.R.layout.simple_spinner_dropdown_item,
@@ -76,9 +76,18 @@ class FaseyhaAssistActivity : Activity() {
                 text = label; minHeight = 48.dp; setOnClickListener { work() }
             })
         }
+        action("Open selected service") {
+            val path = when (service.selectedItemPosition) {
+                0 -> "/recharge"
+                1 -> "/packages"
+                else -> "/bills"
+            }
+            openFaseyhaPath(path)
+        }
+        action("Open dashboard") { openFaseyhaPath("/dashboard") }
         action("Inspect current website form") { inspect() }
         action("Fill visible form fields — do not pay") { prepare() }
-        action("Open Faseyha homepage") { web.loadUrl(homeUrl) }
+        action("Open Faseyha homepage") { openFaseyhaPath("/") }
         action("Browser back") { if (web.canGoBack()) web.goBack() }
         action("Browser forward") { if (web.canGoForward()) web.goForward() }
         action("Refresh") { web.reload() }
@@ -105,12 +114,22 @@ class FaseyhaAssistActivity : Activity() {
             }
         }
         CookieManager.getInstance().setAcceptCookie(true)
-        layout.addView(TextView(this).apply { text = "Website below. First open Dashboard, then choose your service, then open its form. Inspecting the homepage will show zero fields." })
+        layout.addView(TextView(this).apply { text = "Direct navigation: Dashboard /dashboard; Recharge /recharge; Packages /packages; Bill Pay /bills. These paths are based on your observed browser links. Login or provider-side changes may still require interaction. The destination website is shown below." })
         layout.addView(web, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 460.dp))
         layout.addView(actions)
         val scroller = ScrollView(this).apply { isFillViewport = true; addView(layout) }
         setContentView(scroller)
         web.loadUrl(homeUrl)
+    }
+
+    private fun openFaseyhaPath(path: String) {
+        if (path !in setOf("/", "/dashboard", "/recharge", "/packages", "/bills")) {
+            message("Unsupported service path.")
+            return
+        }
+        val destination = "https://faseyha.net" + path
+        state.text = "Opening Faseyha " + (if (path == "/") "homepage" else path.removePrefix("/")) + "."
+        web.loadUrl(destination)
     }
 
     private val Int.dp: Int get() = (this * resources.displayMetrics.density).toInt()
