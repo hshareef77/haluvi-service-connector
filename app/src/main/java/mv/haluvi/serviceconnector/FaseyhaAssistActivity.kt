@@ -80,6 +80,7 @@ class FaseyhaAssistActivity : Activity() {
         }
         primary.addView(Button(this).apply { text = "Prepare selected service form — do not pay"; minHeight = 56.dp; setOnClickListener { prepareSelectedService() } })
         primary.addView(Button(this).apply { text = "Transaction records and review"; minHeight = 56.dp; setOnClickListener { showRecords() } })
+        primary.addView(Button(this).apply { text = "Small payment test instructions"; minHeight = 56.dp; setOnClickListener { showTestGuide() } })
         primary.addView(Button(this).apply { text = "More browser and inspection controls"; minHeight = 56.dp; setOnClickListener {
             actions.visibility = if (actions.visibility == View.GONE) View.VISIBLE else View.GONE
             text = if (actions.visibility == View.VISIBLE) "Hide extra browser controls" else "More browser and inspection controls"
@@ -94,6 +95,8 @@ class FaseyhaAssistActivity : Activity() {
         }
         action("Open dashboard") { openFaseyhaPath("/dashboard") }
         action("Inspect current website form") { inspect() }
+        action("Inspect service choices and controls") { inspectChoices() }
+        action("Small transaction test guidance") { showTestGuide() }
         action("Fill current page form — do not pay") { prepare() }
         action("Open Faseyha homepage") { openFaseyhaPath("/") }
         action("Browser back") { if (web.canGoBack()) web.goBack() }
@@ -270,6 +273,44 @@ class FaseyhaAssistActivity : Activity() {
                 state.text = if (ok) "Fields match the requested details in the current website form. Review the site and submit manually if correct. Transaction not completed or verified." else "Form not prepared: ${data.optString("reason")}. Check the current service form and inspect its fields."
                 message(state.text.toString())
             } catch (e: Exception) { message("Unable to verify form filling. Do not assume the fields were completed.") }
+        }
+    }
+
+    private fun showTestGuide() {
+        val guide = "For a first real transaction, use only a number or account you control and an amount you choose within Faseyha's minimum and available wallet balance.\n\n" +
+            "1. Select Bill Pay, Recharge, or Package Recharge and open the correct provider page.\n" +
+            "2. For Recharge choose the correct operator; for Packages choose the exact package on the provider site.\n" +
+            "3. Enter the target and amount in this assistant. Prepare the form only when the website exposes matching fields.\n" +
+            "4. Confirm target, operator, product, actual provider price and possible fees on the Faseyha website.\n" +
+            "5. Press the WEBSITE Pay button yourself only if you approve the real transaction.\n" +
+            "6. If there is a confirmation or verification step, complete it personally. Check the provider receipt and final status.\n" +
+            "7. Return to Transaction records and review and save a manual observation or receipt reference.\n\n" +
+            "Never retry an uncertain payment without checking Faseyha's history and actual recipient delivery. Local notes are not independently verified success."
+        message(guide)
+    }
+
+    private fun inspectChoices() {
+        if (!isTrusted()) { message("Open a Faseyha page to inspect its service choices."); return }
+        val script = """(function(){
+          const visible=x=>x.getClientRects().length>0;
+          const controls=Array.from(document.querySelectorAll('select,option,button,[role="button"],[role="option"],[role="combobox"],input[type=radio]'))
+            .filter(visible).filter(x=>!x.closest('input[type=password]')).slice(0,65)
+            .map(x=>({kind:x.tagName.toLowerCase(),label:(x.getAttribute('aria-label')||x.innerText||x.getAttribute('title')||'').trim().slice(0,90)}))
+            .filter(x=>x.label.length>0);
+          return JSON.stringify({path:location.pathname.slice(0,90),controls:controls});
+        })();"""
+        web.evaluateJavascript(script) { raw ->
+            try {
+                val result = JSONObject(org.json.JSONArray("[$raw]").getString(0))
+                val controls = result.getJSONArray("controls")
+                val lines = StringBuilder("Service page: " + result.optString("path") + "\nVisible selection controls: " + controls.length())
+                for (i in 0 until controls.length()) {
+                    val o = controls.getJSONObject(i)
+                    lines.append("\n" + (i + 1) + ". " + o.optString("kind") + ": " + o.optString("label"))
+                }
+                lines.append("\n\nThis only inspects labels. It does not activate controls, submit transactions or inspect private payment data. Choose the operator or package on the website itself.")
+                message(lines.toString())
+            } catch (_: Exception) { message("Could not inspect service choices. Open the actual provider form and try again.") }
         }
     }
 
