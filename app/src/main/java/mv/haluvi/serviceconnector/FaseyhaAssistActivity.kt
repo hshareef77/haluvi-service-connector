@@ -61,7 +61,7 @@ class FaseyhaAssistActivity : Activity() {
         }
         layout.addView(service)
         number = EditText(this).apply {
-            hint = "Mobile or account number"; inputType = InputType.TYPE_CLASS_PHONE; setSingleLine(true)
+            hint = "Mobile number or bill account ID"; inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS; setSingleLine(true)
         }
         layout.addView(number)
         amount = EditText(this).apply {
@@ -178,8 +178,14 @@ class FaseyhaAssistActivity : Activity() {
         if (!isTrusted()) { message("You can only fill fields on the Faseyha website."); return }
         val target = number.text.toString().trim()
         val money = amount.text.toString().trim()
-        if (!target.matches(Regex("[0-9]{5,15}"))) {
-            number.error = "Enter a valid numeric phone or account number"; number.requestFocus(); return
+        val isBill = service.selectedItemPosition == 2
+        val validTarget = if (isBill) target.matches(Regex("[A-Za-z0-9-]{5,30}"))
+            else target.matches(Regex("[0-9]{7,15}"))
+        if (!validTarget) {
+            number.error = if (isBill) "Enter a valid account or service number, including any letters"
+                           else "Enter a valid numeric mobile number"
+            number.requestFocus()
+            return
         }
         val parsed = money.toBigDecimalOrNull()
         if (parsed == null || parsed <= BigDecimal.ZERO || parsed > BigDecimal("100000") || parsed.scale() > 2) {
@@ -202,7 +208,7 @@ class FaseyhaAssistActivity : Activity() {
            const num=fields.filter(x=>/(mobile|phone|number|account|subscriber|service)/.test(label(x)));
            const amt=fields.filter(x=>/(amount|price|pay)/.test(label(x)));
            if(num.length!==1 || amt.length!==1 || num[0]===amt[0])
-             return JSON.stringify({ok:false,n:num.length,a:amt.length,reason:'Fields not uniquely identifiable'});
+             return JSON.stringify({ok:false,n:num.length,a:amt.length,reason:'Found '+num.length+' number fields and '+amt.length+' amount fields; need exactly one of each'});
            function update(x,value){
               const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;
               setter.call(x,value);x.dispatchEvent(new Event('input',{bubbles:true}));
