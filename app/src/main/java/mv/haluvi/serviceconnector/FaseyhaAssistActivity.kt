@@ -52,7 +52,7 @@ class FaseyhaAssistActivity : Activity() {
         val title = TextView(this).apply { text = "Faseyha assisted recharge"; textSize = 22f; if (android.os.Build.VERSION.SDK_INT >= 28) isAccessibilityHeading = true }
         layout.addView(title)
         layout.addView(TextView(this).apply {
-            text = "Prepare recharge or bill details. No payment is submitted automatically. You must review and confirm the actual website payment."
+            text = "Step 1: Navigate in the website below: Open Dashboard, choose Recharge or Bill Pay, and open its number and amount form. Step 2: Enter details above. Step 3: Inspect and fill. No payment is submitted automatically."
         })
         service = Spinner(this).apply {
             adapter = ArrayAdapter(this@FaseyhaAssistActivity, android.R.layout.simple_spinner_dropdown_item,
@@ -78,12 +78,11 @@ class FaseyhaAssistActivity : Activity() {
         }
         action("Inspect current website form") { inspect() }
         action("Fill visible form fields — do not pay") { prepare() }
-        action("Open dashboard") { web.loadUrl(homeUrl) }
+        action("Open Faseyha homepage") { web.loadUrl(homeUrl) }
         action("Browser back") { if (web.canGoBack()) web.goBack() }
         action("Browser forward") { if (web.canGoForward()) web.goForward() }
         action("Refresh") { web.reload() }
         action("Close assistant") { finish() }
-        layout.addView(actions)
         web = WebView(this).apply {
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
@@ -100,13 +99,15 @@ class FaseyhaAssistActivity : Activity() {
                 }
                 override fun onPageFinished(view: WebView, url: String) {
                     CookieManager.getInstance().flush()
-                    if (isTrusted()) state.text = "Faseyha page loaded. Navigate to the recharge or bill form, then inspect or fill."
+                    if (isTrusted()) state.text = if (Uri.parse(url).path.isNullOrBlank() || Uri.parse(url).path == "/") "Faseyha homepage loaded. Open Dashboard and a payment form in the website below before inspecting." else "Faseyha page loaded. Open the relevant number and amount form, then inspect."
                     else state.text = "This page is outside faseyha.net. The native field assistant is disabled."
                 }
             }
         }
         CookieManager.getInstance().setAcceptCookie(true)
-        layout.addView(web, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 400.dp))
+        layout.addView(TextView(this).apply { text = "Website below. First open Dashboard, then choose your service, then open its form. Inspecting the homepage will show zero fields." })
+        layout.addView(web, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 460.dp))
+        layout.addView(actions)
         val scroller = ScrollView(this).apply { isFillViewport = true; addView(layout) }
         setContentView(scroller)
         web.loadUrl(homeUrl)
@@ -148,6 +149,7 @@ class FaseyhaAssistActivity : Activity() {
                     val f = fields.getJSONObject(i)
                     report.append("\n${i + 1}. ${f.optString("type")}: ${f.optString("label")}")
                 }
+                if (fields.length() == 0) report.append("\nNo visible form inputs on this page. This usually means you are on the Faseyha homepage or dashboard, not the payment form. Open Dashboard in the website, choose Bill Pay or Recharge, and open its number and amount fields before trying again.")
                 report.append("\n\nNo field values, login tokens, or passwords were collected.")
                 message(report.toString())
             } catch (e: Exception) { message("Could not inspect the current form. Try again after it loads.") }
@@ -194,7 +196,7 @@ class FaseyhaAssistActivity : Activity() {
             try {
                 val data = JSONObject(org.json.JSONArray("[$raw]").getString(0))
                 val ok = data.optBoolean("ok")
-                state.text = if (ok) "Fields prepared. Review the website and submit manually if correct." else "Form not filled: ${data.optString("reason")}."
+                state.text = if (ok) "Fields prepared. Review the website and submit manually if correct." else "Form not filled: ${data.optString("reason")}. First open the correct Faseyha payment form in the website below, then inspect its fields."
                 message(state.text.toString())
             } catch (e: Exception) { message("Unable to verify form filling. Do not assume the fields were completed.") }
         }
