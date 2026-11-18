@@ -1,5 +1,13 @@
 # Haluvi Service Connector
 
+## v1.4 local transaction preparation review
+- The primary Faseyha assistant now shows only **Prepare selected service form**, **Transaction records and review**, and a toggle for advanced browser controls.
+- A successful same-page field-value check creates a local **Prepared** record with a random ID, service, number/account, amount, and timestamp; no website token, cookies, passwords, or raw page HTML are saved.
+- You may explicitly record observations as **User reports submitted**, **Needs review**, **User reports completed**, or **User reports failed**, with an optional local note or receipt reference.
+- These are **user-reported records only**, not provider-authenticated statuses. They must never trigger automatic Recharge Manager/HaluviPay fulfillment.
+- You can delete a record or clear all local records; this does not change any real transaction.
+- Submitting the payment is still manual on the Faseyha website. No automated payment initiation, website outcome scraping, wallet API, or guaranteed verification is claimed. Recharge and Package forms still require live device validation.
+
 ## v1.3 assisted form preparation
 - Choose Recharge, Package Recharge, or Bill Pay; enter target and MVR amount in accessible native fields.
 - Select **Prepare selected service form — do not pay**. If the browser is on another page, the app opens the selected direct service URL. After it loads, select Prepare again.
