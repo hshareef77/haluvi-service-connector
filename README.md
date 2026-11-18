@@ -1,5 +1,14 @@
 # Haluvi Service Connector
 
+## v1.3 assisted form preparation
+- Choose Recharge, Package Recharge, or Bill Pay; enter target and MVR amount in accessible native fields.
+- Select **Prepare selected service form — do not pay**. If the browser is on another page, the app opens the selected direct service URL. After it loads, select Prepare again.
+- A matching Faseyha form displays a review dialog, then the app attempts to fill exactly one target field and one amount field.
+- It checks that those web inputs equal the requested values immediately after insertion. This is **form-fill verification**, not bank/payment verification.
+- The provider website stays visible for manual review and manual transaction authorization.
+- If fields are absent, ambiguous, provider-modified or a special package selection is required, the app stops and reports a failure. No unattended payment submission, wallet result extraction, or automatic Recharge Manager fallback is included.
+- Existing saved website sessions are retained across a normal APK upgrade.
+
 Native Android Kotlin app for TalkBack / Jieshuo+.
 
 ## v1.1 Faseyha website assistant (test)
