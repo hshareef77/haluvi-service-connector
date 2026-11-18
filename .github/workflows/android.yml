@@ -2,8 +2,8 @@ name: Build and publish Android APK
 on:
   workflow_dispatch:
   push:
-    tags:
-      - 'v*'
+    branches: [main]
+    tags: ['v*']
 permissions:
   contents: write
 jobs:
@@ -19,15 +19,20 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
-      - name: Build installable debug APK
+      - name: Build installable test APK
         run: gradle --no-daemon :app:assembleDebug
       - uses: actions/upload-artifact@v4
         with:
-          name: Haluvi-Service-Connector-debug-APK
+          name: Haluvi-Service-Connector-test-APK
           path: app/build/outputs/apk/debug/*.apk
-      - name: Publish tagged GitHub release
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Create or update test release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${GITHUB_REF_NAME}" app/build/outputs/apk/debug/*.apk --title "Haluvi Service Connector ${GITHUB_REF_NAME}" --notes "Installable test APK. Debug signing; not a permanent release-signing key. Includes app picker, HTTPS browser, saved profiles, and opt-in accessibility inspection. No third-party payment-provider integration is claimed." --latest
+          TAG=v1.0.0-test
+          APK=app/build/outputs/apk/debug/app-debug.apk
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$APK" --clobber
+          else
+            gh release create "$TAG" "$APK" --target "$GITHUB_SHA" --title "Haluvi Service Connector 1.0 test" --notes "Installable debug-signed test APK. Includes installed-app selector, HTTPS saved-session browser, local service profiles and opt-in accessibility control inspection. No universal wallet payment integration; no production signing key." --prerelease
+          fi
