@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Haluvi Service Connector</string>
+    <string name="accessibility_description">Optional user-activated inspection of accessible control counts in a selected installed application. No passwords or field text is stored.</string>
+</resources>
