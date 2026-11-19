@@ -43,6 +43,7 @@ class FaseyhaAssistActivity : Activity() {
     private var pendingPaymentAmount: String? = null
     private var pendingPaymentAction: String? = null
     private var providerResultNoticeShown = false
+    private var submissionStartedAt: Long = 0L
     private lateinit var packageCategory: Button
     private lateinit var packageChoice: Button
     private var selectedPackageLabel: String? = null
@@ -649,6 +650,7 @@ class FaseyhaAssistActivity : Activity() {
                     pendingPaymentAmount=money
                     pendingPaymentAction=action
                     submissionAttempted=true
+                    submissionStartedAt=System.currentTimeMillis()
                     observingProviderResult=true
                     providerResultNoticeShown=false
                     state.text="Provider "+action+" button pressed once. Checking Faseyha response. Do not retry."
@@ -669,7 +671,7 @@ class FaseyhaAssistActivity : Activity() {
         if (attempt > 35) {
             observingProviderResult = false
             providerResultNoticeShown = true
-            state.text = "Faseyha has not shown a final result. Checking Wallet without resubmitting."
+            state.text = "Final website result not confirmed. Checking Wallet without resubmitting."
             openWalletVerification()
             return
         }
@@ -750,10 +752,10 @@ class FaseyhaAssistActivity : Activity() {
                     observingProviderResult=false
                     providerResultNoticeShown=true
                     val providerMessage=result.optString("message").take(350)
-                    state.text="Faseyha response: $classification. Check transaction history for confirmation."
+                    state.text="Faseyha response: $classification. Verify the provider transaction in Wallet."
                     AlertDialog.Builder(this).setTitle("Faseyha response — $classification")
                         .setMessage("Provider displayed:\n$providerMessage\n\nThis is a website response, not independent proof of delivery. Check Wallet and receipt before retrying.")
-                        .setPositiveButton("View Wallet"){_,_->startActivity(android.content.Intent(this, FaseyhaWalletActivity::class.java))}
+                        .setPositiveButton("Verify in Wallet"){_,_->openWalletVerification()}
                         .setNegativeButton("Close",null).show()
                 }else web.postDelayed({checkProviderResult(attempt+1)},900)
             }catch(_:Exception){
@@ -768,6 +770,8 @@ class FaseyhaAssistActivity : Activity() {
         verify.putExtra("verify_operator", if(serviceIndex==2) billOperators[billOperatorIndex] else operators[operatorIndex])
         verify.putExtra("verify_recipient", pendingPaymentRecipient.orEmpty())
         verify.putExtra("verify_amount", pendingPaymentAmount.orEmpty())
+        verify.putExtra("verify_started_at", submissionStartedAt)
+        verify.putExtra("verify_package", selectedPackageLabel.orEmpty())
         startActivity(verify)
     }
 
