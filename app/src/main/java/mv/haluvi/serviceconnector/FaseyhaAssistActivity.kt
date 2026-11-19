@@ -767,7 +767,7 @@ class FaseyhaAssistActivity : Activity() {
         if(!isTrusted() || Uri.parse(web.url ?: "").path!=selectedPath()) {
             message("Provider page changed. Check Wallet before retrying.");return
         }
-        val normalized=providerText.replace(Regex("\s+")," ")
+        val normalized=providerText.replace(Regex("\\s+")," ")
         val recipientDigits=normalized.replace(Regex("[^0-9]"),"")
         if(!recipientDigits.contains(target.filter(Char::isDigit))) {
             message("Faseyha confirmation does not show the expected recipient. No final payment made.");return
@@ -778,7 +778,7 @@ class FaseyhaAssistActivity : Activity() {
         }
         // The provider's Recharge amount excludes GST. Compare the total amount
         // charged, not the displayed pre-tax amount, against the user's input.
-        val totalMatch=Regex("total\s+to\s+pay\s*(?:MVR|Rf|ރ)?\s*([0-9,]+(?:\.[0-9]{1,2})?)",RegexOption.IGNORE_CASE).find(normalized)
+        val totalMatch=Regex("total\\s+to\\s+pay\\s*(?:MVR|Rf|ރ)?\\s*([0-9,]+(?:\\.[0-9]{1,2})?)",RegexOption.IGNORE_CASE).find(normalized)
         val total=totalMatch?.groupValues?.get(1)?.replace(",","")?.toBigDecimalOrNull()
         if(money!=null && (total==null || total.compareTo(money.toBigDecimalOrNull() ?: java.math.BigDecimal("-1"))!=0)) {
             message("Provider confirmation total does not match the requested amount. No payment was completed.");return
