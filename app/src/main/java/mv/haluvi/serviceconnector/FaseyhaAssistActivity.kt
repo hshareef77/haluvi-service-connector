@@ -688,23 +688,26 @@ class FaseyhaAssistActivity : Activity() {
             const visible=x=>x.getClientRects().length>0 && getComputedStyle(x).visibility!=='hidden';
             const desired=__ACTION__.toLowerCase();
             const titleRe=desired==='Recharge'?/^confirm recharge$/i:desired==='Pay'?/^confirm (?:bill )?pay(?:ment)?$/i:/^confirm (?:package|activation)$/i;
-            const heads=Array.from(document.querySelectorAll('h1,h2,h3,h4,[role="heading"],strong'))
-              .filter(visible).filter(x=>titleRe.test(clean(x.innerText||x.textContent)));
+            // Locate the actual Faseyha confirmation by its unique visible
+            // action pair. Do not depend on a heading tag: the provider often
+            // renders its "Confirm recharge" title in a plain div.
+            const label=x=>clean(x.innerText||x.value||x.getAttribute('aria-label')||x.textContent);
+            const enabled=x=>visible(x)&&!x.disabled&&x.getAttribute('aria-disabled')!=='true';
+            const buttons=Array.from(document.querySelectorAll('button,[role="button"],input[type="submit"]')).filter(visible);
+            const positive=buttons.filter(x=>/^(confirm\\s*(?:&|and)\\s*recharge|confirm\\s+recharge|confirm\\s*(?:&|and)\\s*pay|confirm\\s+payment|confirm\\s+activation)$/i.test(label(x)));
             let confirmation=null;
-            for(const h of heads){
-              let p=h;
+            if(positive.length===1&&enabled(positive[0])){
+              let p=positive[0].parentElement;
               for(let d=0;p&&d<9;d++,p=p.parentElement){
                 const body=clean(p.innerText||'');
-                if(body.length>1100)break;
-                const buttons=Array.from(p.querySelectorAll('button,[role="button"],input[type="submit"]')).filter(visible);
-                const label=x=>clean(x.innerText||x.value||x.getAttribute('aria-label'));
-                const cancels=buttons.filter(x=>/^(cancel|back|close|no)$/i.test(label(x)));
-                const positives=buttons.filter(x=>/^(confirm(?:\s*(?:&|and)\s*recharge| recharge| payment| bill payment| package| activation)?|yes,? (?:recharge|confirm|pay|activate)|proceed(?: with (?:recharge|payment))?|recharge now|pay now|activate now)$/i.test(label(x)));
-                if(cancels.length>=1&&positives.length===1){
-                  confirmation={summary:body,positive:label(positives[0])};break;
+                if(body.length>1200)break;
+                const siblings=Array.from(p.querySelectorAll('button,[role="button"],input[type="submit"]')).filter(visible);
+                if(siblings.some(x=>/^(cancel|back|close|no)$/i.test(label(x)))
+                   &&siblings.filter(x=>x===positive[0]).length===1
+                   &&/confirm\\s+(?:recharge|payment|bill|activation)/i.test(body)){
+                  confirmation={summary:body,positive:label(positive[0])};break;
                 }
               }
-              if(confirmation)break;
             }
             if(confirmation)return JSON.stringify({classification:'Awaiting confirmation',message:confirmation.summary,actionLabel:confirmation.positive,pathname:location.pathname});
             const notices=Array.from(document.querySelectorAll('[role="alert"],[role="status"],[aria-live],.toast,.notification,.alert,[role="dialog"]'))
@@ -780,13 +783,6 @@ class FaseyhaAssistActivity : Activity() {
         if(money!=null && (total==null || total.compareTo(money.toBigDecimalOrNull() ?: java.math.BigDecimal("-1"))!=0)) {
             message("Provider confirmation total does not match the requested amount. No payment was completed.");return
         }
-        if(action=="Recharge" && money!=null) {
-            // The user authorized this exact transaction in the native review.
-            // Complete only the matching, visible Faseyha confirmation once.
-            state.text="Faseyha confirmation matches the reviewed recharge. Submitting final confirmation once."
-            pressSecondStageConfirmation(target,money,buttonLabel)
-            return
-        }
         val summary="Faseyha is asking for a second confirmation.\n\n"+
             "Service: "+services[serviceIndex]+"\nRecipient: "+target+
             (if(money!=null)"\nRequested amount: MVR "+money else "\nPackage: "+selectedPackageLabel.orEmpty())+
@@ -815,29 +811,29 @@ class FaseyhaAssistActivity : Activity() {
            const shown=x=>x.getClientRects().length>0 && getComputedStyle(x).visibility!=='hidden';
            const heading=action==='Recharge'?/^confirm recharge$/i:
                 action==='Pay'?/^confirm (?:bill )?pay(?:ment)?$/i:/^confirm (?:package|activation)$/i;
-           const heads=Array.from(document.querySelectorAll('h1,h2,h3,h4,[role="heading"],strong'))
-                .filter(shown).filter(x=>heading.test(tidy(x.innerText||x.textContent)));
+           // The provider's final modal may not have semantic heading tags.
+           // Select only one visible, enabled exact confirmation control.
+           const buttons=Array.from(document.querySelectorAll('button,[role="button"],input[type="submit"]')).filter(shown);
+           const label=b=>tidy(b.innerText||b.value||b.getAttribute('aria-label')||b.textContent);
+           const positives=buttons.filter(b=>label(b)===expectedLabel&&!b.disabled
+              &&b.getAttribute('aria-disabled')!=='true'&&getComputedStyle(b).pointerEvents!=='none');
            let found=[];
-           for(const h of heads){
-               let p=h;
-               for(let depth=0;p&&depth<9;depth++,p=p.parentElement){
-                   const summary=tidy(p.innerText||'');
-                   if(summary.length>1100)break;
-                   const digits=summary.replace(/[^0-9]/g,'');
-                   const buttons=Array.from(p.querySelectorAll('button,[role="button"],input[type="submit"]')).filter(shown);
-                   const label=b=>tidy(b.innerText||b.value||b.getAttribute('aria-label'));
-                   const cancels=buttons.filter(b=>/^(cancel|back|close|no)$/i.test(label(b)));
-                   const confirm=buttons.filter(b=>label(b)===expectedLabel&&!b.disabled&&b.getAttribute('aria-disabled')!=='true'
-                      &&getComputedStyle(b).pointerEvents!=='none');
-                   const totalMatch=summary.match(/total\s+to\s+pay\s*(?:MVR|Rf|ރ)?\s*([0-9,]+(?:\.[0-9]{1,2})?)/i);
-                   const providerTotal=totalMatch?Number(totalMatch[1].replace(/,/g,'')):NaN;
-                   const expectedTotal=__MONEY__;
-                   if(cancels.length>=1&&confirm.length===1&&digits.includes(target.replace(/[^0-9]/g,''))
-                       &&summary.toLowerCase().includes(operatorName.toLowerCase())
-                       &&(expectedTotal==='' || (Number.isFinite(providerTotal)&&providerTotal===Number(expectedTotal)))) {
-                       found.push(confirm[0]);break;
-                   }
-               }
+           if(positives.length===1){
+              let p=positives[0].parentElement;
+              for(let depth=0;p&&depth<9;depth++,p=p.parentElement){
+                  const summary=tidy(p.innerText||'');
+                  if(summary.length>1200)break;
+                  const siblings=Array.from(p.querySelectorAll('button,[role="button"],input[type="submit"]')).filter(shown);
+                  const totalMatch=summary.match(/total\\s+to\\s+pay\\s*(?:MVR|Rf|ރ)?\\s*([0-9,]+(?:\\.[0-9]{1,2})?)/i);
+                  const providerTotal=totalMatch?Number(totalMatch[1].replace(/,/g,'')):NaN;
+                  if(siblings.some(b=>/^(cancel|back|close|no)$/i.test(label(b)))
+                     &&summary.replace(/[^0-9]/g,'').includes(target.replace(/[^0-9]/g,''))
+                     &&summary.toLowerCase().includes(operatorName.toLowerCase())
+                     &&(__MONEY__===''||(Number.isFinite(providerTotal)&&providerTotal===Number(__MONEY__)))
+                     &&/confirm\\s+(?:recharge|payment|bill|activation)/i.test(summary)){
+                     found=[positives[0]];break;
+                  }
+              }
            }
            found=[...new Set(found)];
            if(found.length!==1)return JSON.stringify({ok:false,reason:'Provider confirmation missing, changed or ambiguous. Review the website; do not retry blindly.'});
