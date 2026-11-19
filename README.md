@@ -1,5 +1,12 @@
 # Haluvi Service Connector
 
+## v2.1 accessibility and provider-card parsing corrections
+- Bill Pay now displays a native operator selector (Dhiraagu, Ooredoo, Medianet). Actual operator activation is attempted only against a unique non-purchase control on the provider Bills page; inspect website if selection fails.
+- Package Recharge shows a separate native **Package Category** selector, populated from the active operator's Faseyha page. It updates selected-state text only after matching a unique category control.
+- Recharges/Packages automatically attempt operator selection after choosing in the native selector; manual retry remains in advanced controls.
+- Wallet transaction extraction now searches for the smallest ancestor containing reference, monetary amount and provider status; native row labels present service, amount, provider status and date first. Reference appears in transaction details. If a page lacks sufficient data, entries are withheld rather than inventing a status.
+- Transaction history and package controls are DOM-dependent and still require authenticated phone testing. Payments are never submitted automatically. No HaluviPay fallback has been enabled.
+
 ## v2.0 accessible consolidated test release
 - Accessible native **Service** and **Operator** selection buttons display the currently selected values and open radio-choice dialogs that identify the selected choice to TalkBack/Jieshuo+. No unexplained unlabeled dropdowns.
 - Choosing a service opens its saved-session page; choosing an operator attempts safe one-match application automatically when the correct Faseyha page is loaded. An advanced manual retry control remains.
