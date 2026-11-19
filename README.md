@@ -1,5 +1,13 @@
 # Haluvi Service Connector
 
+## v1.9 package groups and payment-result investigation
+- Package browser reads up to 160 visible candidate cards rather than truncating the list at 30. The number shown in Faseyha's "N packages" heading is reported separately; only currently rendered cards can be inspected.
+- A category option reads provider-defined filters such as All, Special Offer, Mini Data Plans, Weekly, Monthly, and Data when exposed. A chosen category is applied only if exactly one matching filter control exists, then the package list can be refreshed.
+- Package card selection still requires separate confirmation, never triggers Activate package or Pay, and remains unverified until the user's actual site summary is checked.
+- Find transaction history scans **existing same-site page links only**, with explicit user confirmation to navigate. If none are found, open the provider menu and retry.
+- Inspect current transaction result reads visible submitted/processing/confirmed/failed messages **without** treating these as verified fulfillment or automatically changing local records.
+- Payment authorization remains manual. Faseyha history, final recipient delivery, and idempotent provider confirmation have not been connected to HaluviPay.
+
 ## Version 1.8: integrated operator and package device tests
 - Native Ooredoo/Dhiraagu selection for Recharge and Package Recharge. Apply operator clicks only one exact non-payment operator control; otherwise the user selects in the website.
 - Browse live Faseyha packages using visible card labels. Select an exact uniquely identified package card with a separate confirmation; never press Activate Package or Pay. If detection fails, use the provider website.
