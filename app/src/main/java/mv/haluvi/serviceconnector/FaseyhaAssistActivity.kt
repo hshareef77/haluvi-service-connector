@@ -27,8 +27,13 @@ class FaseyhaAssistActivity : Activity() {
     private lateinit var web: WebView
     private lateinit var number: EditText
     private lateinit var amount: EditText
-    private lateinit var service: Spinner
-    private lateinit var operator: Spinner
+    private lateinit var service: Button
+    private lateinit var operator: Button
+    private var serviceIndex = 0
+    private var operatorIndex = 0
+    private val services = arrayOf("Recharge", "Package Recharge", "Bill Pay")
+    private val operators = arrayOf("Ooredoo", "Dhiraagu")
+    private var pendingOperator = false
     private lateinit var state: TextView
     private var homeUrl: String = "https://faseyha.net"
     private var prepared = false
@@ -56,18 +61,17 @@ class FaseyhaAssistActivity : Activity() {
         layout.addView(TextView(this).apply {
             text = "Choose service and operator, enter recipient and (for Recharge/Bill Pay) amount. Prepare the form and review Faseyha order summary. Package and payment controls remain with Faseyha."
         })
-        service = Spinner(this).apply {
-            adapter = ArrayAdapter(this@FaseyhaAssistActivity, android.R.layout.simple_spinner_dropdown_item,
-                listOf("Recharge", "Package Recharge", "Bill Pay"))
-            contentDescription = "Select Faseyha service to prepare"
+        service = Button(this).apply {
+            minHeight = 56.dp
+            setOnClickListener { chooseService() }
         }
         layout.addView(service)
-        operator = Spinner(this).apply {
-            adapter = ArrayAdapter(this@FaseyhaAssistActivity, android.R.layout.simple_spinner_dropdown_item,
-                listOf("Ooredoo", "Dhiraagu"))
-            contentDescription = "Choose preferred operator for Recharge or Packages"
+        operator = Button(this).apply {
+            minHeight = 56.dp
+            setOnClickListener { chooseOperator() }
         }
         layout.addView(operator)
+        updateSelections()
         number = EditText(this).apply {
             hint = "Mobile number or bill account ID"; inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS; setSingleLine(true)
         }
@@ -76,17 +80,6 @@ class FaseyhaAssistActivity : Activity() {
             hint = "Amount MVR"; inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL; setSingleLine(true)
         }
         layout.addView(amount)
-        service.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
-            override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
-            override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, position: Int, id: Long) {
-                operator.visibility = if (position == 2) View.GONE else View.VISIBLE
-                val packageMode = position == 1
-                amount.isEnabled = !packageMode
-                amount.visibility = if (packageMode) View.GONE else View.VISIBLE
-                if (packageMode) amount.setText("")
-                number.hint = if (position == 2) "Bill account or service ID" else "Seven-digit mobile number"
-            }
-        }
         state = TextView(this).apply { text = "Status: Open the Faseyha dashboard, then navigate to the required form."; textSize = 15f }
         layout.addView(state)
         val primary = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -97,9 +90,11 @@ class FaseyhaAssistActivity : Activity() {
             })
         }
         primary.addView(Button(this).apply { text = "Prepare selected service form — do not pay"; minHeight = 56.dp; setOnClickListener { prepareSelectedService() } })
-        primary.addView(Button(this).apply { text = "Apply operator on website — no payment"; minHeight = 56.dp; setOnClickListener { applyOperator() } })
+
         primary.addView(Button(this).apply { text = "Read provider order summary"; minHeight = 56.dp; setOnClickListener { readOrderSummary() } })
-        primary.addView(Button(this).apply { text = "Find Faseyha transaction history"; minHeight = 56.dp; setOnClickListener { findHistory() } })
+        primary.addView(Button(this).apply { text = "Faseyha Wallet and Transactions"; minHeight = 56.dp; setOnClickListener {
+            startActivity(android.content.Intent(this, FaseyhaWalletActivity::class.java))
+        } })
         primary.addView(Button(this).apply { text = "Inspect current transaction result"; minHeight = 56.dp; setOnClickListener { inspectResult() } })
         primary.addView(Button(this).apply { text = "Browse packages by category"; minHeight = 56.dp; setOnClickListener { inspectPackageSummary() } })
         primary.addView(Button(this).apply { text = "Transaction records and review"; minHeight = 56.dp; setOnClickListener { showRecords() } })
@@ -108,8 +103,9 @@ class FaseyhaAssistActivity : Activity() {
             actions.visibility = if (actions.visibility == View.GONE) View.VISIBLE else View.GONE
             text = if (actions.visibility == View.VISIBLE) "Hide extra browser controls" else "More browser and inspection controls"
         } })
+        action("Apply operator again") { applyOperator() }
         action("Open selected service") {
-            val path = when (service.selectedItemPosition) {
+            val path = when (serviceIndex) {
                 0 -> "/recharge"
                 1 -> "/packages"
                 else -> "/bills"
@@ -144,6 +140,10 @@ class FaseyhaAssistActivity : Activity() {
                     CookieManager.getInstance().flush()
                     prepared = false
                     lastPreparedSignature = null
+                    if (pendingOperator && isTrusted() && Uri.parse(url).path == selectedPath() && serviceIndex != 2) {
+                        pendingOperator = false
+                        web.postDelayed({ if (isTrusted() && Uri.parse(web.url ?: "").path == selectedPath()) applyOperator(false) }, 450)
+                    }
                     if (isTrusted()) state.text = if (Uri.parse(url).path.isNullOrBlank() || Uri.parse(url).path == "/") "Faseyha homepage loaded. Open Dashboard and a payment form in the website below before inspecting." else "Faseyha page loaded. Open the relevant number and amount form, then inspect."
                     else state.text = "This page is outside faseyha.net. The native field assistant is disabled."
                 }
@@ -159,7 +159,50 @@ class FaseyhaAssistActivity : Activity() {
         web.loadUrl(homeUrl)
     }
 
-    private fun selectedPath(): String = when (service.selectedItemPosition) {
+    private fun updateSelections() {
+        service.text = "Service: " + services[serviceIndex] + ". Select to change"
+        service.contentDescription = "Service, selected " + services[serviceIndex] + ". Double tap to change."
+        operator.text = "Operator: " + operators[operatorIndex] + ". Select to change"
+        operator.contentDescription = "Operator, selected " + operators[operatorIndex] + ". Double tap to change."
+        operator.visibility = if (serviceIndex == 2) View.GONE else View.VISIBLE
+        if (::amount.isInitialized) {
+            amount.visibility = if (serviceIndex == 1) View.GONE else View.VISIBLE
+            amount.isEnabled = serviceIndex != 1
+        }
+        if (::number.isInitialized) number.hint = if (serviceIndex == 2) "Bill account or service ID" else "Seven-digit mobile number"
+    }
+
+    private fun chooseService() {
+        AlertDialog.Builder(this).setTitle("Choose service. Currently " + services[serviceIndex])
+            .setSingleChoiceItems(services, serviceIndex) { dialog, selected ->
+                dialog.dismiss()
+                if (serviceIndex != selected) {
+                    serviceIndex = selected
+                    updateSelections()
+                    pendingOperator = selected != 2
+                    openFaseyhaPath(selectedPath())
+                }
+            }.setNegativeButton("Cancel", null).show()
+    }
+
+    private fun chooseOperator() {
+        AlertDialog.Builder(this).setTitle("Choose operator. Currently " + operators[operatorIndex])
+            .setSingleChoiceItems(operators, operatorIndex) { dialog, selected ->
+                dialog.dismiss()
+                operatorIndex = selected
+                updateSelections()
+                if (serviceIndex != 2) {
+                    if (isTrusted() && Uri.parse(web.url ?: "").path == selectedPath()) {
+                        applyOperator(false)
+                    } else {
+                        pendingOperator = true
+                        openFaseyhaPath(selectedPath())
+                    }
+                }
+            }.setNegativeButton("Cancel", null).show()
+    }
+
+    private fun selectedPath(): String = when (serviceIndex) {
         0 -> "/recharge"
         1 -> "/packages"
         else -> "/bills"
@@ -172,6 +215,7 @@ class FaseyhaAssistActivity : Activity() {
             return
         }
         if (Uri.parse(web.url ?: "").path != expected) {
+            pendingOperator = serviceIndex != 2
             openFaseyhaPath(expected)
             state.text = "Service page opened. After it loads, select Prepare form again. No payment was submitted."
             return
@@ -241,7 +285,7 @@ class FaseyhaAssistActivity : Activity() {
         }
         val target = number.text.toString().trim()
         val money = amount.text.toString().trim()
-        val isBill = service.selectedItemPosition == 2
+        val isBill = serviceIndex == 2
         val validTarget = if (isBill) target.matches(Regex("[A-Za-z0-9-]{5,30}"))
             else target.matches(Regex("[0-9]{7}"))
         if (!validTarget) {
@@ -250,7 +294,7 @@ class FaseyhaAssistActivity : Activity() {
             number.requestFocus()
             return
         }
-        if (service.selectedItemPosition == 1) {
+        if (serviceIndex == 1) {
             AlertDialog.Builder(this).setTitle("Prepare package recipient")
                 .setMessage("Recipient: $target\n\nIn the Faseyha website, choose Ooredoo or Dhiraagu and explicitly select a package. The provider controls the package price, GST and total. This assistant fills only the recipient number, not the amount, and never activates a package.")
                 .setNegativeButton("Cancel", null)
@@ -262,7 +306,7 @@ class FaseyhaAssistActivity : Activity() {
             amount.error = "Enter a positive amount with at most two decimal places"; amount.requestFocus(); return
         }
         AlertDialog.Builder(this).setTitle("Prepare website form")
-            .setMessage("Service: ${service.selectedItem}\nNumber: $target\nAmount: MVR $money\n\nOnly visible matching fields will be filled. No Pay button will be pressed. Check the actual website carefully.")
+            .setMessage("Service: ${services[serviceIndex]}\nNumber: $target\nAmount: MVR $money\n\nOnly visible matching fields will be filled. No Pay button will be pressed. Check the actual website carefully.")
             .setNegativeButton("Cancel", null)
             .setPositiveButton("Fill fields") { _, _ -> fill(target, parsed.toPlainString()) }.show()
     }
@@ -319,9 +363,9 @@ class FaseyhaAssistActivity : Activity() {
                 val ok = data.optBoolean("ok")
                 prepared = ok
                 if (ok) {
-                    val signature = listOf(service.selectedItem.toString(), target, money, web.url ?: "").joinToString("|")
+                    val signature = listOf(services[serviceIndex], target, money, web.url ?: "").joinToString("|")
                     if (signature != lastPreparedSignature) {
-                        FaseyhaLedger.create(this, service.selectedItem.toString(), target, money)
+                        FaseyhaLedger.create(this, services[serviceIndex], target, money)
                         lastPreparedSignature = signature
                     }
                 }
@@ -331,17 +375,14 @@ class FaseyhaAssistActivity : Activity() {
         }
     }
 
-    private fun applyOperator() {
-        if (service.selectedItemPosition == 2) { message("Bill Pay operator selection must be made on the website."); return }
+    private fun applyOperator(showDialog: Boolean = true) {
+        if (serviceIndex == 2) { message("Bill Pay operator selection must be made on the website."); return }
         if (!isTrusted() || Uri.parse(web.url ?: "").path != selectedPath()) {
             message("Open the selected Faseyha service page before choosing an operator.")
             return
         }
-        val name = operator.selectedItem.toString()
-        AlertDialog.Builder(this).setTitle("Apply operator $name?")
-            .setMessage("Only a uniquely identified Ooredoo or Dhiraagu operator control may be activated. This cannot click Pay, Recharge, or Activate Package. Review the website operator and total afterward.")
-            .setNegativeButton("Cancel", null)
-            .setPositiveButton("Apply") { _, _ ->
+        val name = operators[operatorIndex]
+        run {
                 val js = """(function(name){
                    const visible=x=>x.getClientRects().length>0 && getComputedStyle(x).visibility!=='hidden';
                    const normalized=t=>(t||'').replace(/\s+/g,' ').trim().toLowerCase();
@@ -361,10 +402,10 @@ class FaseyhaAssistActivity : Activity() {
                     try {
                         val result = JSONObject(org.json.JSONArray("[$raw]").getString(0))
                         state.text = if (result.optBoolean("ok")) "Operator selection requested. Verify the operator in the Faseyha order summary." else result.optString("reason")
-                        message(state.text.toString())
+                        if (showDialog || !result.optBoolean("ok")) message(state.text.toString())
                     } catch (_: Exception) { message("Operator selection could not be confirmed. Inspect the provider page manually.") }
                 }
-            }.show()
+            }
     }
 
     private fun inspectPackageSummary() {
