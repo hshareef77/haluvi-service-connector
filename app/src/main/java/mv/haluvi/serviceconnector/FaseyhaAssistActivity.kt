@@ -38,6 +38,8 @@ class FaseyhaAssistActivity : Activity() {
     private var pendingOperator = false
     private var pendingPreparation = false
     private var submissionAttempted = false
+    private var observingProviderResult = false
+    private var providerResultNoticeShown = false
     private lateinit var packageCategory: Button
     private lateinit var packageChoice: Button
     private var selectedPackageLabel: String? = null
@@ -102,7 +104,7 @@ class FaseyhaAssistActivity : Activity() {
             hint = "Amount MVR"; inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL; setSingleLine(true)
         }
         layout.addView(amount)
-        state = TextView(this).apply { text = "Status: Open the Faseyha dashboard, then navigate to the required form."; textSize = 15f }
+        state = TextView(this).apply { text = "Status: Opening Faseyha"; textSize = 15f; accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE }
         layout.addView(state)
         val primary = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val actions = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; visibility = View.GONE }
@@ -163,6 +165,7 @@ class FaseyhaAssistActivity : Activity() {
                 }
                 override fun onPageFinished(view: WebView, url: String) {
                     CookieManager.getInstance().flush()
+                    if (observingProviderResult && isTrusted()) view.postDelayed({ checkProviderResult(0) },700)
                     prepared = false
                     lastPreparedSignature = null
                     if (pendingOperator && isTrusted() && Uri.parse(url).path == selectedPath()) {
@@ -307,6 +310,8 @@ class FaseyhaAssistActivity : Activity() {
         }
         prepared = false
         submissionAttempted = false
+        observingProviderResult = false
+        providerResultNoticeShown = false
         lastPreparedSignature = null
         val destination = "https://faseyha.net" + path
         state.text = "Opening Faseyha " + (if (path == "/") "homepage" else path.removePrefix("/")) + "."
@@ -572,6 +577,7 @@ class FaseyhaAssistActivity : Activity() {
                 .filter(x=>x.getClientRects().length>0&&!x.disabled)
                 .filter(x=>clean(x.innerText||x.value||x.getAttribute('aria-label')).toLowerCase()===action.toLowerCase());
             if(matches.length!==1)return JSON.stringify({ok:false,reason:'Provider action button not unique: '+matches.length});
+            window.__haluviBeforeSubmit=(document.body.innerText||"").split(/\n/).map(x=>x.trim()).filter(Boolean);
             matches[0].click();return JSON.stringify({ok:true});
         })(__PATH__,__TARGET__,__MONEY__,__OP__,__ACTION__,__SUMMARY__);"""
             .replace("__PATH__",JSONObject.quote(selectedPath()))
@@ -584,11 +590,81 @@ class FaseyhaAssistActivity : Activity() {
         web.evaluateJavascript(js){raw->
             try{
                 val obj=JSONObject(org.json.JSONArray("[$raw]").getString(0))
-                state.text=if(obj.optBoolean("ok"))
-                    "Faseyha "+action+" pressed once. Transaction status unknown. Check Wallet and receipt before any retry."
-                else "Submission blocked: "+obj.optString("reason")
-                message(state.text.toString())
+                if(obj.optBoolean("ok")) {
+                    observingProviderResult=true
+                    providerResultNoticeShown=false
+                    state.text="Provider "+action+" button pressed once. Checking Faseyha response. Do not retry."
+                    web.postDelayed({ checkProviderResult(0) },750)
+                } else {
+                    state.text="Submission blocked: "+obj.optString("reason")+". No provider transaction was confirmed."
+                    message(state.text.toString())
+                }
             }catch(_:Exception){message("Submission result uncertain. Check Wallet; do not retry automatically.")}
+        }
+    }
+
+
+    // Inspect visible changes after the user's confirmed provider action.
+    // Never turn a button-click acknowledgment into a success claim.
+    private fun checkProviderResult(attempt:Int) {
+        if (!observingProviderResult || providerResultNoticeShown || isFinishing) return
+        if (attempt>12) {
+            observingProviderResult=false
+            providerResultNoticeShown=true
+            state.text="No definitive provider result detected. Status unknown; check Faseyha Wallet before retrying."
+            message(state.text.toString())
+            return
+        }
+        if(!isTrusted()) {
+            observingProviderResult=false
+            providerResultNoticeShown=true
+            message("Provider navigated outside Faseyha. Status unknown. Check Wallet before retrying.")
+            return
+        }
+        val js="""(function(){
+            const clean=x=>(x||'').replace(/\s+/g,' ').trim();
+            const old=window.__haluviBeforeSubmit||[];
+            const oldSet=new Set(old.map(clean));
+            const notices=Array.from(document.querySelectorAll('[role="alert"],[role="status"],[aria-live],.toast,.notification,.alert,[role="dialog"]'))
+                .filter(x=>x.getClientRects().length>0 && getComputedStyle(x).visibility!=='hidden')
+                .map(x=>clean(x.innerText||x.textContent)).filter(x=>x && x.length<500 && !oldSet.has(x));
+            const fresh=(document.body.innerText||'').split(/\n/).map(clean)
+                .filter(x=>x && x.length<350 && !oldSet.has(x));
+            const all=[...new Set([...notices,...fresh])];
+            let classification='Unknown',message='';
+            for(const line of all){
+                if(/insufficient (?:wallet )?(?:balance|funds)|not enough (?:balance|funds)/i.test(line)){
+                    classification='Insufficient balance';message=line;break;
+                }
+                if(/\b(failed|declined|unsuccessful|rejected|payment error|transaction error)\b/i.test(line)){
+                    classification='Failed';message=line;break;
+                }
+                if(/\b(successful|successfully|payment completed|transaction completed|activated successfully|recharge complete)\b/i.test(line)){
+                    classification='Provider reported success';message=line;break;
+                }
+                if(/\b(processing|pending|submitted|being processed)\b/i.test(line)){
+                    classification='Processing';message=line;break;
+                }
+            }
+            return JSON.stringify({classification:classification,message:message,pathname:location.pathname});
+        })();"""
+        web.evaluateJavascript(js){raw->
+            if(!observingProviderResult || providerResultNoticeShown || isFinishing)return@evaluateJavascript
+            try{
+                val result=JSONObject(org.json.JSONArray("[$raw]").getString(0))
+                val classification=result.optString("classification","Unknown")
+                if(classification!="Unknown"){
+                    observingProviderResult=false
+                    providerResultNoticeShown=true
+                    val providerMessage=result.optString("message").take(350)
+                    state.text="Faseyha response: $classification. Check transaction history for confirmation."
+                    AlertDialog.Builder(this).setTitle("Faseyha response — $classification")
+                        .setMessage("Provider displayed:\n$providerMessage\n\nThis is a website response, not independent proof of delivery. Check Wallet and receipt before retrying.")
+                        .setPositiveButton("OK",null).show()
+                }else web.postDelayed({checkProviderResult(attempt+1)},900)
+            }catch(_:Exception){
+                web.postDelayed({checkProviderResult(attempt+1)},900)
+            }
         }
     }
 
