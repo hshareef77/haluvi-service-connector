@@ -208,15 +208,13 @@ class FaseyhaWalletActivity : Activity() {
             records.values.forEach{row->
                 val service=row.optString("service","Unknown service")
                 val wholesale=service.contains("wholesale",true)
-                val kind=if(category=="Payments")"Wallet deposit"
-                    else if(wholesale)"Wholesale "
-                    else ""
+                val kind=if(category=="Payments")"Wallet deposit" else ""
                 val date=row.optString("date","Date not identified")
                 val price=row.optString("price").ifBlank{receiptCache[row.optString("reference")]?.optString("amount")?.takeIf{it.isNotBlank()} ?: "amount unavailable"}
                 val status=row.optString("status","Not shown")
                 val details=receiptCache[row.optString("reference")]
                 val account=details?.optString("account")?.takeIf{it.isNotBlank()} ?: ""
-                val summary="$kind$service. " + (if(account.isNotBlank())"$account. " else "") + "MVR $price. $status. $date."
+                val summary=(if(kind.isNotBlank())"$kind. " else "") + "$service. " + (if(account.isNotBlank())"$account. " else "") + "MVR $price. $status. $date."
                 list.addView(Button(this).apply{
                     minHeight=buttonHeight
                     text="$summary View details"
@@ -232,17 +230,28 @@ class FaseyhaWalletActivity : Activity() {
         }
     }
     private fun detail(row:JSONObject,kind:String){
+        val ref=row.optString("reference")
+        val extra=receiptCache[ref]
         val u=Uri.parse(row.optString("url"))
-        AlertDialog.Builder(this).setTitle(kind)
-            .setMessage("Service: "+row.optString("service")+"\nAmount: MVR "+row.optString("price").ifBlank{"not identified"}+"\nDate: "+row.optString("date")+"\n\nProvider status: "+row.optString("status")+
-                "\nTransaction reference: "+row.optString("reference")+
-                "\nWebsite evidence only. Final delivery and order matching have not been verified.")
+        val account=extra?.optString("account").orEmpty().ifBlank{"Not available in Wallet history; open receipt"}
+        val receiptAmount=extra?.optString("amount").orEmpty()
+        val price=row.optString("price").ifBlank{receiptAmount.ifBlank{"Not identified"}}
+        val receiptStatus=extra?.optString("status").orEmpty().ifBlank{"Not inspected"}
+        val detailText="Service: "+row.optString("service")+
+            "\nAccount or recipient: "+account+
+            "\nAmount: MVR "+price+
+            "\nDate: "+row.optString("date")+
+            "\nWallet status: "+row.optString("status")+
+            "\nReceipt payment status: "+receiptStatus+
+            "\nTransaction reference: "+ref+
+            "\n\nWallet success and receipt payment status do not independently confirm delivery to the mobile recipient."
+        AlertDialog.Builder(this).setTitle(row.optString("service").ifBlank{kind})
+            .setMessage(detailText)
             .setPositiveButton("Open provider receipt"){_,_->
-                if(u.scheme=="https"&&trusted(u.host)) {
-                    receiptReference=row.optString("reference")
+                if(u.scheme=="https"&&trusted(u.host)){
+                    receiptReference=ref
                     web.loadUrl(u.toString())
-                }
-                else message("No safe same-site receipt URL was found.")
+                }else message("No safe same-site receipt URL was found.")
             }.setNegativeButton("Close",null).show()
     }
     private fun inspectReceipt() {
@@ -265,18 +274,23 @@ class FaseyhaWalletActivity : Activity() {
             val parsed=decode(raw)
             if(parsed==null){state.text="Could not inspect original Faseyha receipt.";return@evaluateJavascript}
             val reported=parsed.optString("reference")
-            if(ref!=null && reported.isNotBlank() && !ref.equals(reported,true)){
+            if(ref!=null && (reported.isBlank() || !ref.equals(reported,true))){
                 state.text="Receipt reference does not match selected history transaction. No data was merged."
                 return@evaluateJavascript
             }
             if(ref!=null){
                 receiptCache[ref]=parsed
                 state.text="Receipt details retrieved for the selected transaction. Return to Wallet to view updated details."
-                message("Receipt details from provider:\\nReference: "+ref+
-                    "\\nRecipient/account: "+parsed.optString("account").ifBlank{"Not identified"}+
-                    "\\nAmount: MVR "+parsed.optString("amount").ifBlank{"Not identified"}+
-                    "\\nStatus: "+parsed.optString("status")+
-                    "\\n\\nPaid in Full confirms payment to provider, not independently mobile recharge delivery.")
+                AlertDialog.Builder(this).setTitle("Provider receipt details")
+                    .setMessage("Reference: "+ref+
+                        "\nAccount or recipient: "+parsed.optString("account").ifBlank{"Not identified"}+
+                        "\nAmount: MVR "+parsed.optString("amount").ifBlank{"Not identified"}+
+                        "\nReceipt status: "+parsed.optString("status")+
+                        "\n\nPaid in Full confirms payment to provider, not independently mobile recharge delivery.")
+                    .setPositiveButton("Back to Wallet"){_,_->
+                        receiptReference=null
+                        web.loadUrl("https://faseyha.net/wallet")
+                    }.setNegativeButton("Remain on receipt",null).show()
             }
         }
     }
