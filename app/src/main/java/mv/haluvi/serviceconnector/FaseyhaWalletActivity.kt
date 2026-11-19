@@ -34,6 +34,11 @@ class FaseyhaWalletActivity : Activity() {
     private val receiptQueue=ArrayDeque<Pair<String,String>>()
     private var automaticReceiptReads=0
     private var receiptBusy=false
+    private var verificationAnnounced=false
+    private val verifyRecipient by lazy { intent.getStringExtra("verify_recipient").orEmpty().trim() }
+    private val verifyAmount by lazy { intent.getStringExtra("verify_amount").orEmpty().trim() }
+    private val verifyOperator by lazy { intent.getStringExtra("verify_operator").orEmpty().trim() }
+    private val verifyService by lazy { intent.getStringExtra("verify_service").orEmpty().trim() }
     private lateinit var advanced: LinearLayout
     private val records=linkedMapOf<String,JSONObject>()
     private val buttonHeight:Int get()=(56*resources.displayMetrics.density).toInt()
@@ -247,6 +252,7 @@ class FaseyhaWalletActivity : Activity() {
                     setOnClickListener{detail(row,kind)}
                 })
             }
+            checkRequestedTransaction()
             if(obj.optBoolean("more") && records.size<limit && autoLoads<6 && records.size>previousAutoCount) {
                 previousAutoCount=records.size
                 autoLoads++
@@ -254,6 +260,51 @@ class FaseyhaWalletActivity : Activity() {
             }
         }
     }
+    private fun normalizedMoney(value:String):String? {
+        return try {
+            java.math.BigDecimal(value.replace(",", "").trim()).setScale(2).toPlainString()
+        } catch (_:Exception) { null }
+    }
+    private fun checkRequestedTransaction() {
+        if (verificationAnnounced || category!="Recharges" || verifyRecipient.isBlank() ||
+            verifyAmount.isBlank() || verifyOperator.isBlank() || verifyService.isBlank()) return
+        val requestedAmount=normalizedMoney(verifyAmount) ?: return
+        val possible=records.values.filter { row ->
+            val service=row.optString("service")
+            if(service.contains("wholesale",true) ||
+               !service.contains(verifyOperator,true)) return@filter false
+            val serviceMatch=when(verifyService) {
+                "Recharge" -> service.contains("reload",true) || service.contains("raastas",true) ||
+                    (service.contains("recharge",true) && !service.contains("package",true))
+                "Package Recharge" -> service.contains("package",true) || service.contains("data",true)
+                else -> service.contains("bill",true)
+            }
+            if(!serviceMatch) return@filter false
+            val ref=row.optString("reference")
+            val receipt=receiptCache[ref]
+            val amount=normalizedMoney(row.optString("price"))
+                ?: receipt?.optString("amount")?.let { normalizedMoney(it) }
+            amount==requestedAmount && receipt?.optString("account")
+                ?.replace(" ", "")?.removePrefix("+960")==verifyRecipient
+        }
+        if(possible.size==1) {
+            val row=possible.first()
+            val status=row.optString("status","Unknown")
+            verificationAnnounced=true
+            state.text="Matching Wallet transaction found. Provider status: $status."
+            AlertDialog.Builder(this).setTitle("Faseyha transaction matched")
+                .setMessage("Service: "+row.optString("service")+
+                    "\nRecipient: "+verifyRecipient+"\nAmount: MVR "+requestedAmount+
+                    "\nWallet status: "+status+
+                    "\nReference: "+row.optString("reference")+
+                    "\n\nThis confirms the provider history entry, not independent network delivery.")
+                .setPositiveButton("OK",null).show()
+        } else if(possible.size>1) {
+            verificationAnnounced=true
+            state.text="Multiple matching transactions found. Open receipts and confirm the reference."
+        }
+    }
+
     private fun detail(row:JSONObject,kind:String){
         val ref=row.optString("reference")
         val extra=receiptCache[ref]
