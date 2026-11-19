@@ -824,13 +824,13 @@ class FaseyhaAssistActivity : Activity() {
                   const summary=tidy(p.innerText||'');
                   if(summary.length>1200)break;
                   const siblings=Array.from(p.querySelectorAll('button,[role="button"],input[type="submit"]')).filter(shown);
-                  const totalMatch=summary.match(/total\\s+to\\s+pay\\s*(?:MVR|Rf|ރ)?\\s*([0-9,]+(?:\\.[0-9]{1,2})?)/i);
+                  const totalMatch=summary.match(/total\s+to\s+pay\s*(?:MVR|Rf|ރ)?\s*([0-9,]+(?:\.[0-9]{1,2})?)/i);
                   const providerTotal=totalMatch?Number(totalMatch[1].replace(/,/g,'')):NaN;
                   if(siblings.some(b=>/^(cancel|back|close|no)$/i.test(label(b)))
                      &&summary.replace(/[^0-9]/g,'').includes(target.replace(/[^0-9]/g,''))
                      &&summary.toLowerCase().includes(operatorName.toLowerCase())
                      &&(__MONEY__===''||(Number.isFinite(providerTotal)&&providerTotal===Number(__MONEY__)))
-                     &&/confirm\\s+(?:recharge|payment|bill|activation)/i.test(summary)){
+                     &&/confirm\s+(?:recharge|payment|bill|activation)/i.test(summary)){
                      found=[positives[0]];break;
                   }
               }
