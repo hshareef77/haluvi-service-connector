@@ -566,7 +566,7 @@ class FaseyhaAssistActivity : Activity() {
                     "\n\nNo payment has been submitted."
                 AlertDialog.Builder(this).setTitle("Review "+action+" — not submitted")
                     .setMessage(details)
-                    .setPositiveButton(action){_,_->confirmFinalSubmission(target,money,summary)}
+                    .setPositiveButton(action){_,_->if(serviceIndex==0)submitOnce(target,money,summary) else confirmFinalSubmission(target,money,summary)}
                     .setNegativeButton("Review website",null).show()
             }catch(_:Exception){message("Provider summary cannot be read. No payment submitted.")}
         }
@@ -699,7 +699,7 @@ class FaseyhaAssistActivity : Activity() {
                 const buttons=Array.from(p.querySelectorAll('button,[role="button"],input[type="submit"]')).filter(visible);
                 const label=x=>clean(x.innerText||x.value||x.getAttribute('aria-label'));
                 const cancels=buttons.filter(x=>/^(cancel|back|close|no)$/i.test(label(x)));
-                const positives=buttons.filter(x=>/^(confirm(?: recharge| payment| bill payment| package| activation)?|yes,? (?:recharge|confirm|pay|activate)|proceed(?: with (?:recharge|payment))?|recharge now|pay now|activate now)$/i.test(label(x)));
+                const positives=buttons.filter(x=>/^(confirm(?:\s*(?:&|and)\s*recharge| recharge| payment| bill payment| package| activation)?|yes,? (?:recharge|confirm|pay|activate)|proceed(?: with (?:recharge|payment))?|recharge now|pay now|activate now)$/i.test(label(x)));
                 if(cancels.length>=1&&positives.length===1){
                   confirmation={summary:body,positive:label(positives[0])};break;
                 }
@@ -773,6 +773,20 @@ class FaseyhaAssistActivity : Activity() {
         if(!normalized.contains(selectedOperator,ignoreCase=true)) {
             message("Faseyha confirmation operator differs from the selected operator. Nothing submitted.");return
         }
+        // The provider's Recharge amount excludes GST. Compare the total amount
+        // charged, not the displayed pre-tax amount, against the user's input.
+        val totalMatch=Regex("total\\s+to\\s+pay\\s*(?:MVR|Rf|ރ)?\\s*([0-9,]+(?:\\.[0-9]{1,2})?)",RegexOption.IGNORE_CASE).find(normalized)
+        val total=totalMatch?.groupValues?.get(1)?.replace(",","")?.toBigDecimalOrNull()
+        if(money!=null && (total==null || total.compareTo(money.toBigDecimalOrNull() ?: java.math.BigDecimal("-1"))!=0)) {
+            message("Provider confirmation total does not match the requested amount. No payment was completed.");return
+        }
+        if(action=="Recharge" && money!=null) {
+            // The user authorized this exact transaction in the native review.
+            // Complete only the matching, visible Faseyha confirmation once.
+            state.text="Faseyha confirmation matches the reviewed recharge. Submitting final confirmation once."
+            pressSecondStageConfirmation(target,money,buttonLabel)
+            return
+        }
         val summary="Faseyha is asking for a second confirmation.\n\n"+
             "Service: "+services[serviceIndex]+"\nRecipient: "+target+
             (if(money!=null)"\nRequested amount: MVR "+money else "\nPackage: "+selectedPackageLabel.orEmpty())+
@@ -815,8 +829,12 @@ class FaseyhaAssistActivity : Activity() {
                    const cancels=buttons.filter(b=>/^(cancel|back|close|no)$/i.test(label(b)));
                    const confirm=buttons.filter(b=>label(b)===expectedLabel&&!b.disabled&&b.getAttribute('aria-disabled')!=='true'
                       &&getComputedStyle(b).pointerEvents!=='none');
+                   const totalMatch=summary.match(/total\s+to\s+pay\s*(?:MVR|Rf|ރ)?\s*([0-9,]+(?:\.[0-9]{1,2})?)/i);
+                   const providerTotal=totalMatch?Number(totalMatch[1].replace(/,/g,'')):NaN;
+                   const expectedTotal=__MONEY__;
                    if(cancels.length>=1&&confirm.length===1&&digits.includes(target.replace(/[^0-9]/g,''))
-                       &&summary.toLowerCase().includes(operatorName.toLowerCase())) {
+                       &&summary.toLowerCase().includes(operatorName.toLowerCase())
+                       &&(expectedTotal==='' || (Number.isFinite(providerTotal)&&providerTotal===Number(expectedTotal)))) {
                        found.push(confirm[0]);break;
                    }
                }
@@ -832,6 +850,7 @@ class FaseyhaAssistActivity : Activity() {
             .replace("__TARGET__",JSONObject.quote(target))
             .replace("__OP__",JSONObject.quote(op))
             .replace("__ACTION__",JSONObject.quote(action))
+            .replace("__MONEY__",JSONObject.quote(money ?: ""))
             .replace("__LABEL__",JSONObject.quote(expectedLabel))
         web.evaluateJavascript(js){raw->
             try{
