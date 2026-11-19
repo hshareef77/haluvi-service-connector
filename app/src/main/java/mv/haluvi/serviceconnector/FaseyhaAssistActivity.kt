@@ -666,11 +666,11 @@ class FaseyhaAssistActivity : Activity() {
     // Never turn a button-click acknowledgment into a success claim.
     private fun checkProviderResult(attempt:Int) {
         if (!observingProviderResult || providerResultNoticeShown || isFinishing) return
-        if (attempt>12) {
-            observingProviderResult=false
-            providerResultNoticeShown=true
-            state.text="No definitive provider result detected. Status unknown; check Faseyha Wallet before retrying."
-            message(state.text.toString())
+        if (attempt > 35) {
+            observingProviderResult = false
+            providerResultNoticeShown = true
+            state.text = "Faseyha has not shown a final result. Checking Wallet without resubmitting."
+            openWalletVerification()
             return
         }
         if(!isTrusted()) {
@@ -741,6 +741,11 @@ class FaseyhaAssistActivity : Activity() {
                 if(classification=="Awaiting confirmation"){
                     observingProviderResult=false
                     showSecondStageConfirmation(result.optString("message"), result.optString("actionLabel"))
+                } else if(classification=="Processing"){
+                    // Processing is not a final result. Continue observing without resubmitting.
+                    if(attempt==0 || attempt==10 || attempt==25)
+                        state.text="Faseyha is processing. Waiting for a final result; do not retry."
+                    web.postDelayed({checkProviderResult(attempt+1)},1100)
                 } else if(classification!="Unknown"){
                     observingProviderResult=false
                     providerResultNoticeShown=true
@@ -755,6 +760,15 @@ class FaseyhaAssistActivity : Activity() {
                 web.postDelayed({checkProviderResult(attempt+1)},900)
             }
         }
+    }
+
+    private fun openWalletVerification() {
+        val verify = android.content.Intent(this, FaseyhaWalletActivity::class.java)
+        verify.putExtra("verify_service", services[serviceIndex])
+        verify.putExtra("verify_operator", if(serviceIndex==2) billOperators[billOperatorIndex] else operators[operatorIndex])
+        verify.putExtra("verify_recipient", pendingPaymentRecipient.orEmpty())
+        verify.putExtra("verify_amount", pendingPaymentAmount.orEmpty())
+        startActivity(verify)
     }
 
     // A separate native confirmation is required for Faseyha's own modal.
