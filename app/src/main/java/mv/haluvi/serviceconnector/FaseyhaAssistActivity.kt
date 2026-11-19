@@ -492,6 +492,67 @@ class FaseyhaAssistActivity : Activity() {
         }
     }
 
+    private fun findHistory() {
+        if (!isTrusted()) { message("Open Faseyha first."); return }
+        val js="""(function(){
+          const links=Array.from(document.querySelectorAll('a[href]')).map(x=>({
+             title:(x.innerText||x.getAttribute('aria-label')||'').replace(/\s+/g,' ').trim().slice(0,80),
+             url:x.href
+          })).filter(x=>{
+             try{const u=new URL(x.url);return u.protocol==='https:' &&
+               (u.hostname==='faseyha.net'||u.hostname.endsWith('.faseyha.net')) &&
+               /history|transaction|activity|orders|receipts/i.test(u.pathname+' '+x.title);}
+             catch(e){return false;}
+          }).filter((v,i,a)=>a.findIndex(w=>w.url===v.url)===i).slice(0,20);
+          return JSON.stringify({links:links});
+        })();"""
+        web.evaluateJavascript(js){raw->
+            try {
+                val arr=JSONObject(org.json.JSONArray("[$raw]").getString(0)).getJSONArray("links")
+                if(arr.length()==0){
+                    message("No visible history link on this page. Open the Faseyha website menu or dashboard, then search again. No history address was guessed.")
+                    return@evaluateJavascript
+                }
+                val labels=Array(arr.length()){i->
+                    val o=arr.getJSONObject(i)
+                    o.optString("title").ifBlank{"History"}+" — "+Uri.parse(o.getString("url")).path
+                }
+                AlertDialog.Builder(this).setTitle("Faseyha history links")
+                  .setItems(labels){_,i->
+                    val url=arr.getJSONObject(i).getString("url")
+                    val uri=Uri.parse(url)
+                    if(uri.scheme=="https" && trusted(uri.host)){
+                        AlertDialog.Builder(this).setTitle("Open provider history?")
+                          .setMessage("Navigate to "+uri.path+" using the saved website session? This application will not automatically approve any transaction.")
+                          .setPositiveButton("Open"){_,_->web.loadUrl(url)}
+                          .setNegativeButton("Cancel",null).show()
+                    }else message("History link is outside allowed website.")
+                  }.setNegativeButton("Close",null).show()
+            }catch (_:Exception){message("Unable to inspect Faseyha history links.")}
+        }
+    }
+
+    private fun inspectResult() {
+        if(!isTrusted()){message("Open the provider transaction result page first.");return}
+        val js="""(function(){
+          const lines=(document.body.innerText||'').split(/\n/).map(x=>x.replace(/\s+/g,' ').trim()).filter(Boolean);
+          const selected=lines.filter(x=>x.length<=180 &&
+             /\b(submitted|processing|pending|successful|completed|confirmed|failed|declined|cancelled|reference|receipt)\b/i.test(x)).slice(0,20);
+          return JSON.stringify({path:location.pathname,lines:selected});
+        })();"""
+        web.evaluateJavascript(js){raw->
+            try{
+                val obj=JSONObject(org.json.JSONArray("[$raw]").getString(0))
+                val lines=obj.getJSONArray("lines")
+                val text=StringBuilder("Visible Faseyha status text on "+obj.optString("path")+":\n")
+                if(lines.length()==0)text.append("No recognized status message found.")
+                for(i in 0 until lines.length())text.append("\n"+(i+1)+". "+lines.getString(i))
+                text.append("\n\nSubmitted or processing does not independently establish final delivery. Check Faseyha history and recipient before retrying. Local record statuses remain user-reported.")
+                message(text.toString())
+            }catch (_:Exception){message("Could not read a provider status message. Check transaction history directly.")}
+        }
+    }
+
     private fun showTestGuide() {
         val guide = "For a first real transaction, use only a number or account you control and an amount you choose within Faseyha's minimum and available wallet balance.\n\n" +
             "1. Select Bill Pay, Recharge, or Package Recharge and open the correct provider page.\n" +
