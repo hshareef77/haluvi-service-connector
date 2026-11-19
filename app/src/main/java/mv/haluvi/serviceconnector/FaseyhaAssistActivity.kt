@@ -496,15 +496,17 @@ class FaseyhaAssistActivity : Activity() {
                    const shown=x=>x.getClientRects().length>0 && getComputedStyle(x).visibility!=='hidden';
                    const nodes=Array.from(document.querySelectorAll('button,[role="tab"],[role="button"]')).filter(shown).filter(x=>!x.disabled);
                    const match=nodes.filter(x=>tidy(x.innerText||x.getAttribute('aria-label'))===tidy(wanted));
-                   if(match.length!==1) return JSON.stringify({reason:'Category not unique; select on the website.'});
+                   if(match.length!==1) return JSON.stringify({ok:false,reason:'Category not unique; select on the website.'});
                    match[0].click();
-                   return JSON.stringify({reason:'Category selected. Browse packages to review current results.'});
+                   return JSON.stringify({ok:true,reason:'Category selected. Browse packages to review current results.'});
                 })(__GROUP__);""".replace("__GROUP__",JSONObject.quote(groups[index]))
                 web.evaluateJavascript(js){raw->
                     try {
                         val result=JSONObject(org.json.JSONArray("[$raw]").getString(0))
-                        packageCategory.text = "Package category: " + groups[index] + ". Choose category"
-                        packageCategory.contentDescription = "Package category, selected " + groups[index] + ". Choose category."
+                        if (result.optBoolean("ok")) {
+                            packageCategory.text = "Package category: " + groups[index] + ". Choose category"
+                            packageCategory.contentDescription = "Package category, selected " + groups[index] + ". Choose category."
+                        }
                         state.text = result.optString("reason") + " No package activated."
                     }catch (_:Exception){message("Could not confirm category selection.")}
                 }
