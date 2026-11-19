@@ -39,12 +39,10 @@ class FaseyhaAssistActivity : Activity() {
     private var pendingPreparation = false
     private var submissionAttempted = false
     private var observingProviderResult = false
-    private var providerResultNoticeShown = false
-    // A provider confirmation dialog is a separate authorization stage, not a result.
     private var pendingPaymentRecipient: String? = null
     private var pendingPaymentAmount: String? = null
     private var pendingPaymentAction: String? = null
-
+    private var providerResultNoticeShown = false
     private lateinit var packageCategory: Button
     private lateinit var packageChoice: Button
     private var selectedPackageLabel: String? = null
@@ -756,7 +754,6 @@ class FaseyhaAssistActivity : Activity() {
         }
     }
 
-
     // A separate native confirmation is required for Faseyha's own modal.
     // The final provider modal must be present, visible, uniquely actionable and
     // contain the originally reviewed recipient, operator and amount.
@@ -776,11 +773,11 @@ class FaseyhaAssistActivity : Activity() {
         if(!normalized.contains(selectedOperator,ignoreCase=true)) {
             message("Faseyha confirmation operator differs from the selected operator. Nothing submitted.");return
         }
-        val summary="Faseyha is asking for a second confirmation.\\n\\n"+
-            "Service: "+services[serviceIndex]+"\\nRecipient: "+target+
-            (if(money!=null)"\\nRequested amount: MVR "+money else "\\nPackage: "+selectedPackageLabel.orEmpty())+
-            "\\n\\nFaseyha dialog:\\n"+providerText.take(850)+
-            "\\n\\nThis confirmation can spend wallet funds. Only confirm if all details agree."
+        val summary="Faseyha is asking for a second confirmation.\n\n"+
+            "Service: "+services[serviceIndex]+"\nRecipient: "+target+
+            (if(money!=null)"\nRequested amount: MVR "+money else "\nPackage: "+selectedPackageLabel.orEmpty())+
+            "\n\nFaseyha dialog:\n"+providerText.take(850)+
+            "\n\nThis confirmation can spend wallet funds. Only confirm if all details agree."
         state.text="Faseyha confirmation is open. Review the provider dialog before final authorization."
         AlertDialog.Builder(this).setTitle("Final Faseyha confirmation")
             .setMessage(summary)
@@ -800,7 +797,7 @@ class FaseyhaAssistActivity : Activity() {
         val js="""(function(target,operatorName,action,expectedLabel){
            if(location.protocol!=='https:'||location.hostname!=='faseyha.net'||location.pathname!==__PATH__)
                return JSON.stringify({ok:false,reason:'Provider page changed'});
-           const tidy=x=>(x||'').replace(/\\s+/g,' ').trim();
+           const tidy=x=>(x||'').replace(/\s+/g,' ').trim();
            const shown=x=>x.getClientRects().length>0 && getComputedStyle(x).visibility!=='hidden';
            const heading=action==='Recharge'?/^confirm recharge$/i:
                 action==='Pay'?/^confirm (?:bill )?pay(?:ment)?$/i:/^confirm (?:package|activation)$/i;
@@ -826,7 +823,7 @@ class FaseyhaAssistActivity : Activity() {
            }
            found=[...new Set(found)];
            if(found.length!==1)return JSON.stringify({ok:false,reason:'Provider confirmation missing, changed or ambiguous. Review the website; do not retry blindly.'});
-           window.__haluviBeforeSubmit=(document.body.innerText||'').split(/\\n/).map(x=>x.trim()).filter(Boolean);
+           window.__haluviBeforeSubmit=(document.body.innerText||'').split(/\n/).map(x=>x.trim()).filter(Boolean);
            try{sessionStorage.setItem('haluvi_before_submit',JSON.stringify(window.__haluviBeforeSubmit));}catch(e){}
            found[0].click();
            return JSON.stringify({ok:true});
@@ -849,447 +846,6 @@ class FaseyhaAssistActivity : Activity() {
                     message(state.text.toString())
                 }
             }catch(_:Exception){message("Final confirmation outcome uncertain. Check Faseyha Wallet before retrying.")}
-        }
-    }
-
-    private fun applyOperator(showDialog: Boolean = true) {
-        if (!isTrusted() || Uri.parse(web.url ?: "").path != selectedPath()) {
-            message("Open the selected Faseyha service page before choosing an operator.")
-            return
-        }
-        val name = if (serviceIndex == 2) billOperators[billOperatorIndex] else operators[operatorIndex]
-        run {
-                val js = """(function(name){
-                   const visible=x=>x.getClientRects().length>0 && getComputedStyle(x).visibility!=='hidden';
-                   const normalized=t=>(t||'').replace(/\s+/g,' ').trim().toLowerCase();
-                   const expected=normalized(name);
-                   const nodes=Array.from(document.querySelectorAll('button,[role="tab"],[role="radio"],[role="button"],label,input[type="radio"]'))
-                       .filter(visible).filter(x=>!x.disabled);
-                   const label=x=>normalized([x.getAttribute('aria-label'),x.getAttribute('title'),
-                      x.innerText,x.getAttribute('value')].filter(Boolean).join(' '));
-                   const safe=x=>!/(pay|recharge now|activate|submit|purchase|checkout|confirm)/.test(label(x));
-                   const matches=nodes.filter(x=>safe(x) && (label(x)===expected ||
-                        label(x)===expected+' raastas' || label(x)===expected+' reload'));
-                   if(matches.length!==1) return JSON.stringify({ok:false,reason:'Found '+matches.length+' exact matching operator controls. Select operator manually on website if none or ambiguous.'});
-                   matches[0].click();
-                   return JSON.stringify({ok:true,reason:'Operator control activated. Verify operator selection in the actual provider order summary.'});
-                 })(${JSONObject.quote(name)});"""
-                web.evaluateJavascript(js) { raw ->
-                    try {
-                        val result = JSONObject(org.json.JSONArray("[$raw]").getString(0))
-                        state.text = if (result.optBoolean("ok")) "Operator selection requested. Verify the operator in the Faseyha order summary." else result.optString("reason")
-                        if (pendingPreparation && !showDialog) {
-                            pendingPreparation = false
-                            if (result.optBoolean("ok")) {
-                                state.text = "Operator selected. Preparing provider form…"
-                                web.postDelayed({ if(isTrusted() && Uri.parse(web.url ?: "").path==selectedPath()) prepareWhenReady(0) },1100)
-                            } else message("Operator selection was not confirmed. No form or payment submitted. Select the operator on the website and tap Continue again.")
-                        } else if (showDialog || !result.optBoolean("ok")) message(state.text.toString())
-                    } catch (_: Exception) { message("Operator selection could not be confirmed. Inspect the provider page manually.") }
-                }
-            }
-    }
-
-    private fun clearPackageSelection() {
-        selectedPackageLabel = null
-        selectedPackagePrice = null
-        if (::packageChoice.isInitialized) {
-            packageChoice.text = "Package: Not selected. Choose package"
-            packageChoice.contentDescription = "Package not selected. Choose package."
-        }
-        if (::packageCategory.isInitialized) {
-            packageCategory.text = "Package category: All. Choose category"
-            packageCategory.contentDescription = "Package category, selected All. Choose category."
-        }
-    }
-
-    private fun inspectPackageSummary() {
-        if (serviceIndex != 1 || !isTrusted() || Uri.parse(web.url ?: "").path != "/packages") {
-            state.text = "Opening Package Recharge. Choose package again when the website loads."
-            openFaseyhaPath("/packages")
-            return
-        }
-        val js = """(function(){
-          const visible=x=>x.getClientRects().length>0 && getComputedStyle(x).visibility!=='hidden';
-          const tidy=t=>(t||'').replace(/\s+/g,' ').trim();
-          const nodes=Array.from(document.querySelectorAll('button,[role="option"],[role="radio"],[role="button"],label,article,[class*="package"],[class*="Package"]'));
-          const raw=nodes.filter(visible).map(x=>tidy(x.innerText||x.getAttribute('aria-label')||''))
-            .filter(s=>s.length>=12 && s.length<=260 && /\b(gb|mb|data|minutes|days|package)\b/i.test(s))
-            .filter(s=>!/(activate package|purchase now|confirm payment|pay now|checkout)/i.test(s));
-          const unique=raw.filter((v,i,a)=>a.indexOf(v)===i).slice(0,160);
-          const items=unique.map(s=>{
-              const first=s.match(/^(.*?)(?=\s+(?:special offer|(?:\d+(?:\.\d+)?\s*(?:gb|mb|days))))/i);
-              const title=(first?first[1]:s.split(/SPECIAL OFFER| \d+\s*(?:GB|MB)\s*\/day/i)[0]).trim().slice(0,85)||s.slice(0,85);
-              const prices=[...s.matchAll(/(?:MVR|Rf|ރ)?\s*([\d,]+(?:\.\d{1,2})?)\s*incl\.?\s*GST/gi)];
-              const price=prices.length?prices[prices.length-1][1]:'';
-              return {title:title,text:s,price:price};
-          });
-          return JSON.stringify({items:items});
-        })();"""
-        web.evaluateJavascript(js) { raw ->
-            try {
-                val obj = JSONObject(org.json.JSONArray("[$raw]").getString(0))
-                val arr = obj.getJSONArray("items")
-                if (arr.length() == 0) {
-                    message("No package cards were identified. Check operator and category on Faseyha's site.")
-                    return@evaluateJavascript
-                }
-                val names = Array(arr.length()) { i ->
-                    val item = arr.getJSONObject(i)
-                    item.optString("title") + (if (item.optString("price").isNotBlank()) ", MVR " + item.optString("price") + " including GST" else "")
-                }
-                AlertDialog.Builder(this).setTitle("Choose package — " + operators[operatorIndex])
-                    .setItems(names) { _, index ->
-                        val item=arr.getJSONObject(index)
-                        selectPackageCard(item.optString("text"))
-                    }.setNegativeButton("Cancel", null).show()
-            } catch (_: Exception) { message("Unable to read available packages. Choose on provider website.") }
-        }
-    }
-
-    private fun choosePackageGroup(groups:Array<String>) {
-        AlertDialog.Builder(this).setTitle("Faseyha package category")
-            .setItems(groups){_,index->
-                if(!isTrusted() || Uri.parse(web.url ?: "").path!="/packages"){
-                    message("Open the Faseyha Packages page first.")
-                    return@setItems
-                }
-                val js="""(function(wanted){
-                   const tidy=x=>(x||'').replace(/\s+/g,' ').trim().toLowerCase();
-                   const shown=x=>x.getClientRects().length>0 && getComputedStyle(x).visibility!=='hidden';
-                   const nodes=Array.from(document.querySelectorAll('button,[role="tab"],[role="button"]')).filter(shown).filter(x=>!x.disabled);
-                   const match=nodes.filter(x=>tidy(x.innerText||x.getAttribute('aria-label'))===tidy(wanted));
-                   if(match.length!==1) return JSON.stringify({ok:false,reason:'Category not unique; select on the website.'});
-                   match[0].click();
-                   return JSON.stringify({ok:true,reason:'Category selected. Browse packages to review current results.'});
-                })(__GROUP__);""".replace("__GROUP__",JSONObject.quote(groups[index]))
-                web.evaluateJavascript(js){raw->
-                    try {
-                        val result=JSONObject(org.json.JSONArray("[$raw]").getString(0))
-                        if (result.optBoolean("ok")) {
-                            clearPackageSelection()
-                            packageCategory.text = "Package category: " + groups[index] + ". Choose category"
-                            packageCategory.contentDescription = "Package category, selected " + groups[index] + ". Choose category."
-                        }
-                        state.text = result.optString("reason") + " No package activated."
-                    }catch (_:Exception){message("Could not confirm category selection.")}
-                }
-            }.setNegativeButton("Cancel",null).show()
-    }
-
-    private fun selectPackageCard(label: String) {
-        if (!isTrusted() || Uri.parse(web.url ?: "").path != "/packages") {
-            message("Open Packages to select a provider package.")
-            return
-        }
-        val js = """(function(wanted){
-            const tidy=t=>(t||'').replace(/\s+/g,' ').trim();
-            const visible=x=>x.getClientRects().length>0 && getComputedStyle(x).visibility!=='hidden';
-            const nodes=Array.from(document.querySelectorAll('button,[role="option"],[role="radio"],[role="button"],label,article,[class*="package"],[class*="Package"]'));
-            const match=nodes.filter(visible).filter(x=>tidy(x.innerText||x.getAttribute('aria-label')||'')===wanted)
-                .filter(x=>!/(activate package|pay now|checkout|confirm payment|purchase now)/i.test(tidy(x.innerText)));
-            if(match.length!==1) return JSON.stringify({ok:false,reason:'Ambiguous package card. Select on Faseyha website.'});
-            const node=match[0];
-            if(node.matches('form,[type="submit"],a[href]') || node.querySelector('button[type="submit"],a[href*="checkout"]'))
-                return JSON.stringify({ok:false,reason:'Potential submit control. Selection blocked.'});
-            node.click();
-            return JSON.stringify({ok:true});
-        })(__LABEL__);""".replace("__LABEL__",JSONObject.quote(label))
-        web.evaluateJavascript(js) { raw ->
-            try {
-                val result=JSONObject(org.json.JSONArray("[$raw]").getString(0))
-                if (!result.optBoolean("ok")) {
-                    message(result.optString("reason","Package selection unavailable."))
-                    return@evaluateJavascript
-                }
-                web.postDelayed({
-                    if (!isTrusted() || Uri.parse(web.url ?: "").path != "/packages") return@postDelayed
-                    val verify = """(function(){
-                        const text=(document.body.innerText||'');
-                        const i=text.lastIndexOf('Order summary');
-                        if(i<0) return JSON.stringify({ok:false,reason:'Order summary unavailable.'});
-                        const summary=text.slice(i,i+650).replace(/\s+/g,' ').trim();
-                        return JSON.stringify({ok:/\bpackage\b/i.test(summary)&&/total/i.test(summary),summary:summary});
-                    })();"""
-                    web.evaluateJavascript(verify){v->
-                        try {
-                            val parsed=JSONObject(org.json.JSONArray("[$v]").getString(0))
-                            if (!parsed.optBoolean("ok")) {
-                                message("Package control was selected but provider summary is not ready. Check website manually.")
-                                return@evaluateJavascript
-                            }
-                            selectedPackageLabel=label.take(90)
-                            val prices=Regex("""([\d,]+(?:\.\d{1,2})?)\s*incl\.?\s*GST""", RegexOption.IGNORE_CASE).findAll(label).toList()
-                            selectedPackagePrice=prices.lastOrNull()?.groupValues?.get(1)
-                            val shortName=label.substringBefore(" SPECIAL OFFER",label).take(50)
-                            val price=selectedPackagePrice
-                            packageChoice.text = "Package: " + shortName + (if (price.isNullOrBlank()) "" else ", MVR " + price) + ". Change"
-                            packageChoice.contentDescription = packageChoice.text
-                            state.text = "Package applied to provider. Review the actual Faseyha summary before paying."
-                        } catch (_:Exception) {message("Unable to verify provider package selection.") }
-                    }
-                },350)
-            } catch (_:Exception) {message("Unable to select package on Faseyha.")}
-        }
-    }
-
-    private fun readOrderSummary() {
-        if (!isTrusted() || Uri.parse(web.url ?: "").path != selectedPath()) {
-            message("Open the selected Faseyha service page and its order summary first.")
-            return
-        }
-        val js = """(function(){
-          const txt=(document.body.innerText||'');
-          const index=txt.toLowerCase().lastIndexOf('order summary');
-          if(index<0) return JSON.stringify({found:false});
-          const part=txt.slice(index,index+1500).replace(/\s+/g,' ').trim();
-          return JSON.stringify({found:true,summary:part.slice(0,900)});
-        })();"""
-        web.evaluateJavascript(js) { raw ->
-            try {
-                val obj = JSONObject(org.json.JSONArray("[$raw]").getString(0))
-                if (!obj.optBoolean("found")) message("No readable order summary is visible on this provider page.")
-                else message("Faseyha website order summary (not a transaction result):\n" + obj.optString("summary") + "\n\nVerify operator, recipient, selected product, tax and total on the provider page. Do not rely on this text alone to authorize payment.")
-            } catch (_: Exception) { message("Unable to read the provider order summary.") }
-        }
-    }
-
-    private fun findHistory() {
-        if (!isTrusted()) { message("Open Faseyha first."); return }
-        val js="""(function(){
-          const links=Array.from(document.querySelectorAll('a[href]')).map(x=>({
-             title:(x.innerText||x.getAttribute('aria-label')||'').replace(/\s+/g,' ').trim().slice(0,80),
-             url:x.href
-          })).filter(x=>{
-             try{const u=new URL(x.url);return u.protocol==='https:' &&
-               (u.hostname==='faseyha.net'||u.hostname.endsWith('.faseyha.net')) &&
-               /history|transaction|activity|orders|receipts/i.test(u.pathname+' '+x.title);}
-             catch(e){return false;}
-          }).filter((v,i,a)=>a.findIndex(w=>w.url===v.url)===i).slice(0,20);
-          return JSON.stringify({links:links});
-        })();"""
-        web.evaluateJavascript(js){raw->
-            try {
-                val arr=JSONObject(org.json.JSONArray("[$raw]").getString(0)).getJSONArray("links")
-                if(arr.length()==0){
-                    message("No visible history link on this page. Open the Faseyha website menu or dashboard, then search again. No history address was guessed.")
-                    return@evaluateJavascript
-                }
-                val labels=Array(arr.length()){i->
-                    val o=arr.getJSONObject(i)
-                    o.optString("title").ifBlank{"History"}+" — "+Uri.parse(o.getString("url")).path
-                }
-                AlertDialog.Builder(this).setTitle("Faseyha history links")
-                  .setItems(labels){_,i->
-                    val url=arr.getJSONObject(i).getString("url")
-                    val uri=Uri.parse(url)
-                    if(uri.scheme=="https" && trusted(uri.host)){
-                        AlertDialog.Builder(this).setTitle("Open provider history?")
-                          .setMessage("Navigate to "+uri.path+" using the saved website session? This application will not automatically approve any transaction.")
-                          .setPositiveButton("Open"){_,_->web.loadUrl(url)}
-                          .setNegativeButton("Cancel",null).show()
-                    }else message("History link is outside allowed website.")
-                  }.setNegativeButton("Close",null).show()
-            }catch (_:Exception){message("Unable to inspect Faseyha history links.")}
-        }
-    }
-
-    private fun inspectResult() {
-        if(!isTrusted()){message("Open the provider transaction result page first.");return}
-        val js="""(function(){
-          const lines=(document.body.innerText||'').split(/\n/).map(x=>x.replace(/\s+/g,' ').trim()).filter(Boolean);
-          const selected=lines.filter(x=>x.length<=180 &&
-             /\b(submitted|processing|pending|successful|completed|confirmed|failed|declined|cancelled|reference|receipt)\b/i.test(x)).slice(0,20);
-          return JSON.stringify({path:location.pathname,lines:selected});
-        })();"""
-        web.evaluateJavascript(js){raw->
-            try{
-                val obj=JSONObject(org.json.JSONArray("[$raw]").getString(0))
-                val lines=obj.getJSONArray("lines")
-                val text=StringBuilder("Visible Faseyha status text on "+obj.optString("path")+":\n")
-                if(lines.length()==0)text.append("No recognized status message found.")
-                for(i in 0 until lines.length())text.append("\n"+(i+1)+". "+lines.getString(i))
-                text.append("\n\nSubmitted or processing does not independently establish final delivery. Check Faseyha history and recipient before retrying. Local record statuses remain user-reported.")
-                message(text.toString())
-            }catch (_:Exception){message("Could not read a provider status message. Check transaction history directly.")}
-        }
-    }
-
-    private fun showTestGuide() {
-        val guide = "For a first real transaction, use only a number or account you control and an amount you choose within Faseyha's minimum and available wallet balance.\n\n" +
-            "1. Select Bill Pay, Recharge, or Package Recharge and open the correct provider page.\n" +
-            "2. For Recharge choose the correct operator; for Packages choose the exact package on the provider site.\n" +
-            "3. Enter the target and amount for Recharge/Bill Pay. For packages enter only the recipient; choose the actual package and price in the Faseyha website. Prepare only when the website exposes matching fields.\n" +
-            "4. Confirm target, operator, product, actual provider price and possible fees on the Faseyha website.\n" +
-            "5. Press the WEBSITE Pay button yourself only if you approve the real transaction.\n" +
-            "6. If there is a confirmation or verification step, complete it personally. Check the provider receipt and final status.\n" +
-            "7. Return to Transaction records and review and save a manual observation or receipt reference.\n\n" +
-            "Never retry an uncertain payment without checking Faseyha's history and actual recipient delivery. Local notes are not independently verified success."
-        message(guide)
-    }
-
-    private fun inspectChoices() {
-        if (!isTrusted()) { message("Open a Faseyha page to inspect its service choices."); return }
-        val script = """(function(){
-          const visible=x=>x.getClientRects().length>0;
-          const controls=Array.from(document.querySelectorAll('select,option,button,[role="button"],[role="option"],[role="combobox"],input[type=radio]'))
-            .filter(visible).filter(x=>!x.closest('input[type=password]')).slice(0,65)
-            .map(x=>({kind:x.tagName.toLowerCase(),label:(x.getAttribute('aria-label')||x.innerText||x.getAttribute('title')||'').trim().slice(0,90)}))
-            .filter(x=>x.label.length>0);
-          return JSON.stringify({path:location.pathname.slice(0,90),controls:controls});
-        })();"""
-        web.evaluateJavascript(script) { raw ->
-            try {
-                val result = JSONObject(org.json.JSONArray("[$raw]").getString(0))
-                val controls = result.getJSONArray("controls")
-                val lines = StringBuilder("Service page: " + result.optString("path") + "\nVisible selection controls: " + controls.length())
-                for (i in 0 until controls.length()) {
-                    val o = controls.getJSONObject(i)
-                    lines.append("\n" + (i + 1) + ". " + o.optString("kind") + ": " + o.optString("label"))
-                }
-                lines.append("\n\nThis only inspects labels. It does not activate controls, submit transactions or inspect private payment data. Choose the operator or package on the website itself.")
-                message(lines.toString())
-            } catch (_: Exception) { message("Could not inspect service choices. Open the actual provider form and try again.") }
-        }
-    }
-
-    private fun showRecords() {
-        val rows = FaseyhaLedger.list(this)
-        if (rows.length() == 0) {
-            message("No transaction preparations recorded yet. These records do not prove a payment.")
-            return
-        }
-        val labels = Array(rows.length()) { index ->
-            val r = rows.getJSONObject(index)
-            r.optString("service") + " — " + r.optString("target") +
-                " — MVR " + r.optString("amount") + " — " + r.optString("status")
-        }
-        AlertDialog.Builder(this).setTitle("Local preparation and review history")
-            .setItems(labels) { _, selected -> showRecord(rows.getJSONObject(selected).optString("id")) }
-            .setNeutralButton("Clear records") { _, _ ->
-                AlertDialog.Builder(this).setTitle("Clear all local records?")
-                    .setMessage("This only deletes local notes, not provider transaction history.")
-                    .setPositiveButton("Delete") { _, _ -> FaseyhaLedger.clear(this) }
-                    .setNegativeButton("Cancel", null).show()
-            }.setNegativeButton("Close", null).show()
-    }
-
-    private fun showRecord(id: String) {
-        val rows = FaseyhaLedger.list(this)
-        var record: JSONObject? = null
-        for (i in 0 until rows.length()) {
-            val item = rows.getJSONObject(i)
-            if (item.optString("id") == id) { record = item; break }
-        }
-        if (record == null) { message("Record was not found."); return }
-        val details = record.optString("service") + "\nTarget: " + record.optString("target") +
-            "\nMVR " + record.optString("amount") + "\nStatus: " + record.optString("status") +
-            "\nNote: " + record.optString("note") +
-            "\n\nThis record contains only local preparation and user-reported observations. It is not provider-confirmed payment evidence."
-        AlertDialog.Builder(this).setTitle("Faseyha transaction record").setMessage(details)
-            .setPositiveButton("Update observation") { _, _ -> updateRecord(id) }
-            .setNeutralButton("Delete record") { _, _ ->
-                AlertDialog.Builder(this).setTitle("Delete this local record?")
-                    .setPositiveButton("Delete") { _, _ -> FaseyhaLedger.delete(this, id) }
-                    .setNegativeButton("Cancel", null).show()
-            }.setNegativeButton("Close", null).show()
-    }
-
-    private fun updateRecord(id: String) {
-        val options = arrayOf("Prepared", "User reports submitted", "Needs review", "User reports completed", "User reports failed")
-        AlertDialog.Builder(this).setTitle("Choose observed status")
-            .setItems(options) { _, choice ->
-                val note = EditText(this).apply {
-                    hint = "Optional receipt reference or note. Never include a password."
-                    inputType = InputType.TYPE_CLASS_TEXT
-                    setSingleLine(false)
-                    maxLines = 3
-                }
-                AlertDialog.Builder(this).setTitle(options[choice])
-                    .setMessage("Manual note only. No provider status has been verified; do not use this as proof of successful HaluviPay fulfillment.")
-                    .setView(note)
-                    .setPositiveButton("Save observation") { _, _ ->
-                        if (FaseyhaLedger.update(this, id, options[choice], note.text.toString().trim()))
-                            message("Saved locally as a user-reported observation, not a verified provider result.")
-                        else message("Could not save the observation.")
-                    }.setNegativeButton("Cancel", null).show()
-            }.setNegativeButton("Cancel", null).show()
-    }
-
-    override fun onBackPressed() {
-        if (::web.isInitialized && web.canGoBack()) web.goBack() else super.onBackPressed()
-    }
-    override fun onDestroy() {
-        if (::web.isInitialized) {
-            (web.parent as? ViewGroup)?.removeView(web)
-            web.destroy()
-        }
-        super.onDestroy()
-    }
-}
-,'i');
-            const headers=Array.from(document.querySelectorAll('h1,h2,h3,h4,[role="heading"],strong'))
-                 .filter(shown).filter(x=>hRe.test(clean(x.innerText||x.textContent)));
-            let confirmation=null;
-            for(const h of headers){
-                let p=h;
-                for(let depth=0;p&&depth<9;depth++,p=p.parentElement){
-                    const body=clean(p.innerText||'');
-                    if(body.length>1100)break;
-                    const buttons=Array.from(p.querySelectorAll('button,[role="button"],input[type="submit"]')).filter(shown);
-                    const label=b=>clean(b.innerText||b.value||b.getAttribute('aria-label'));
-                    const cancel=buttons.filter(b=>/^(cancel|back|close|no)$/i.test(label(b)));
-                    const positive=buttons.filter(b=>/^(confirm(?: recharge| payment| bill payment| package| activation)?|yes,? (?:recharge|confirm|pay|activate)|proceed(?: with (?:recharge|payment))?|recharge now|pay now|activate now)$/i.test(label(b)));
-                    if(cancel.length>=1&&positive.length===1){
-                        confirmation={summary:body,positive:label(positive[0]),candidateCount:positive.length};
-                        break;
-                    }
-                }
-                if(confirmation)break;
-            }
-            if(confirmation)return JSON.stringify({classification:'Awaiting confirmation',message:confirmation.summary,actionLabel:confirmation.positive,pathname:location.pathname});
-
-            const notices=Array.from(document.querySelectorAll('[role="alert"],[role="status"],[aria-live],.toast,.notification,.alert,[role="dialog"]'))
-                .filter(x=>x.getClientRects().length>0 && getComputedStyle(x).visibility!=='hidden')
-                .map(x=>clean(x.innerText||x.textContent)).filter(x=>x && x.length<500 && !oldSet.has(x));
-            const fresh=(document.body.innerText||'').split(/\n/).map(clean)
-                .filter(x=>x && x.length<350 && !oldSet.has(x));
-            const all=[...new Set([...notices,...fresh])];
-            let classification='Unknown',message='';
-            for(const line of all){
-                if(/insufficient (?:wallet )?(?:balance|funds)|not enough (?:balance|funds)/i.test(line)){
-                    classification='Insufficient balance';message=line;break;
-                }
-                if(/\b(failed|declined|unsuccessful|rejected|payment error|transaction error)\b/i.test(line)){
-                    classification='Failed';message=line;break;
-                }
-                if(/\b(successful|successfully|payment completed|transaction completed|activated successfully|recharge complete)\b/i.test(line)){
-                    classification='Provider reported success';message=line;break;
-                }
-                if(/\b(processing|pending|submitted|being processed)\b/i.test(line)){
-                    classification='Processing';message=line;break;
-                }
-            }
-            return JSON.stringify({classification:classification,message:message,pathname:location.pathname});
-        })();"""
-        web.evaluateJavascript(js){raw->
-            if(!observingProviderResult || providerResultNoticeShown || isFinishing)return@evaluateJavascript
-            try{
-                val result=JSONObject(org.json.JSONArray("[$raw]").getString(0))
-                val classification=result.optString("classification","Unknown")
-                if(classification!="Unknown"){
-                    observingProviderResult=false
-                    providerResultNoticeShown=true
-                    val providerMessage=result.optString("message").take(350)
-                    state.text="Faseyha response: $classification. Check transaction history for confirmation."
-                    AlertDialog.Builder(this).setTitle("Faseyha response — $classification")
-                        .setMessage("Provider displayed:\n$providerMessage\n\nThis is a website response, not independent proof of delivery. Check Wallet and receipt before retrying.")
-                        .setPositiveButton("View Wallet"){_,_->startActivity(android.content.Intent(this, FaseyhaWalletActivity::class.java))}
-                        .setNegativeButton("Close",null).show()
-                }else web.postDelayed({checkProviderResult(attempt+1)},900)
-            }catch(_:Exception){
-                web.postDelayed({checkProviderResult(attempt+1)},900)
-            }
         }
     }
 
