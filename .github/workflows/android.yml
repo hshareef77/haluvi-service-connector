@@ -22,6 +22,21 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.10.2'
+      - name: Prevent release version-code reuse
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          code=$(sed -n 's/.*versionCode = \\([0-9][0-9]*\\).*/\\1/p' app/build.gradle.kts | head -1)
+          latest_tag=$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq '.tag_name' 2>/dev/null || true)
+          if [[ "$latest_tag" =~ -build([0-9]+)-run[0-9]+$ ]]; then
+            previous_code=${BASH_REMATCH[1]}
+            if (( code <= previous_code )); then
+              echo "::error::Android versionCode $code must exceed latest released versionCode $previous_code ($latest_tag)."
+              exit 1
+            fi
+          fi
       - name: Restore and verify permanent signing certificate
         env:
           KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
