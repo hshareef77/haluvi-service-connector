@@ -331,11 +331,11 @@ class FaseyhaWalletActivity : Activity() {
             state.text="Matching recent Wallet transaction. Provider status: $status."
             AlertDialog.Builder(this).setTitle("Faseyha transaction verification")
                 .setMessage("Service: "+row.optString("service")+
-                    "\\nRecipient: "+verifyRecipient+
-                    "\\nAmount: MVR "+row.optString("price").ifBlank{proof?.optString("amount").orEmpty()}+
-                    "\\nWallet status: "+status+
-                    "\\nReference: "+ref+
-                    "\\n\\nThis verifies Faseyha's matching recent transaction, not independently mobile delivery.")
+                    "\nRecipient: "+verifyRecipient+
+                    "\nAmount: MVR "+row.optString("price").ifBlank{proof?.optString("amount").orEmpty()}+
+                    "\nWallet status: "+status+
+                    "\nReference: "+ref+
+                    "\n\nThis verifies Faseyha's matching recent transaction, not independently mobile delivery.")
                 .setPositiveButton("OK",null).show()
         }else if(possible.size>1){
             verificationAnnounced=true
