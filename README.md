@@ -1,5 +1,13 @@
 # Haluvi Service Connector
 
+## v2.2 combined native workflow and wallet improvements
+- Main forms use service-specific labels: Recharge and Package Recharge use **Mobile number (7 digits)**; Bill Pay uses **Account or service number**.
+- Package Recharge has immediately visible **Operator**, **Package category**, **Package**, and recipient controls. Package categories are fetched from the current Faseyha HTML and package cards are selected with one tap; the connector checks for a provider order summary and never submits payment.
+- The main action is **Continue — prepare and review, do not pay**. Advanced inspection controls are grouped away from the primary workflow.
+- Native Wallet rows now attempt to read service, amount, status and date from complete transaction cards, with a strict no-invention fallback. Reference appears in details. A selected receipt can be inspected on the original provider page; parsed data is only joined if its receipt reference matches the chosen history row when present.
+- Wallet defaults to **Recharges**, with **Payments** for deposits. Wholesale and customer records remain distinct. Load More automatically retrieves additional pages with a bounded limit; diagnostic navigation is under Advanced.
+- Read-only HTML inspection is *not* an official API; exact recipient/amount extraction and automatic package selection must be validated on device. No unattended payment or HaluviPay fallback is enabled.
+
 ## v2.1 accessibility and provider-card parsing corrections
 - Bill Pay now displays a native operator selector (Dhiraagu, Ooredoo, Medianet). Actual operator activation is attempted only against a unique non-purchase control on the provider Bills page; inspect website if selection fails.
 - Package Recharge shows a separate native **Package Category** selector, populated from the active operator's Faseyha page. It updates selected-state text only after matching a unique category control.
