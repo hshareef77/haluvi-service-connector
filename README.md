@@ -1,5 +1,14 @@
 # Haluvi Service Connector
 
+## v2.3 combined fixes: package flow and Wallet receipt details
+
+- Package Recharge **Continue** now fills the seven-digit recipient in the website and checks the actual provider order summary before showing a native review. It no longer prompts the user to choose the operator/package a second time. It **never** presses the Activate Package/Pay button.
+- The Package Category control appears for **Dhiraagu** only, matching the observed Faseyha operator UI; Ooredoo uses the direct Package selector. Changing operator/category clears the prior selected package.
+- Selected package buttons use concise package names and provider-displayed prices where available.
+- Wallet transaction rows no longer say "Wholesale Wholesale". An inspected receipt's matching account/recipient, amount and receipt payment status are displayed in the native details; receipt review offers return to Wallet. Receipt references must match before merging data, and readable line breaks replace literal backslash-n.
+- The Wallet list is retrieved from the provider's authenticated page. Most recipient IDs are **not available in the history list** and are obtained only by opening matching receipts. Do not equate Paid in Full with delivered recharge. All automated payment submission remains disabled.
+- These website-dependent paths require device verification. Successful APK builds do not establish real transaction correctness.
+
 ## v2.2 combined native workflow and wallet improvements
 - Main forms use service-specific labels: Recharge and Package Recharge use **Mobile number (7 digits)**; Bill Pay uses **Account or service number**.
 - Package Recharge has immediately visible **Operator**, **Package category**, **Package**, and recipient controls. Package categories are fetched from the current Faseyha HTML and package cards are selected with one tap; the connector checks for a provider order summary and never submits payment.
