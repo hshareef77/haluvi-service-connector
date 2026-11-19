@@ -29,12 +29,17 @@ class FaseyhaWalletActivity : Activity() {
     private var receiptReference: String? = null
     private var receiptReturnToWallet = false
     private val receiptCache = mutableMapOf<String,JSONObject>()
+    private lateinit var receiptWeb:WebView
+    private val receiptQueue=ArrayDeque<Pair<String,String>>()
+    private var automaticReceiptReads=0
+    private var receiptBusy=false
     private lateinit var advanced: LinearLayout
     private val records=linkedMapOf<String,JSONObject>()
     private val buttonHeight:Int get()=(56*resources.displayMetrics.density).toInt()
 
     override fun onCreate(savedInstanceState:Bundle?) {
         super.onCreate(savedInstanceState)
+        loadVerifiedReceipts()
         val root=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL;setPadding(20,12,20,12)}
         root.addView(TextView(this).apply{text="Faseyha Wallet and Transactions";textSize=23f
             if(android.os.Build.VERSION.SDK_INT>=28)isAccessibilityHeading=true})
@@ -84,6 +89,24 @@ class FaseyhaWalletActivity : Activity() {
         }
         CookieManager.getInstance().setAcceptCookie(true)
         root.addView(web,LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,(330*resources.displayMetrics.density).toInt()))
+        receiptWeb=WebView(this).apply {
+            settings.javaScriptEnabled=true
+            settings.domStorageEnabled=true
+            settings.allowFileAccess=false
+            settings.allowContentAccess=false
+            webViewClient=object:WebViewClient(){
+                override fun shouldOverrideUrlLoading(view:WebView,request:WebResourceRequest):Boolean {
+                    return request.url.scheme!="https" || !trusted(request.url.host)
+                }
+                override fun onPageFinished(view:WebView,url:String){
+                    val u=Uri.parse(url)
+                    if(u.scheme=="https" && trusted(u.host) && u.path?.startsWith("/invoice/")==true)
+                        view.postDelayed({ inspectAutomaticReceipt() },500)
+                    else finishAutomaticReceipt()
+                }
+            }
+        }
+        root.addView(receiptWeb,LinearLayout.LayoutParams(1,1))
         setContentView(ScrollView(this).apply{addView(root)})
         web.loadUrl("https://faseyha.net/wallet")
     }
@@ -202,6 +225,7 @@ class FaseyhaWalletActivity : Activity() {
                 obj.optString("balance","unknown")+". "+records.size+" entries. "+
                 (if(obj.optBoolean("more"))"Load More available."else"No Load More button detected.")
             list.removeAllViews()
+            if(category=="Recharges") enqueueMissingReceipts()
             if(records.isEmpty())list.addView(TextView(this).apply{
                 text="No transactions recognized. Select the category on Faseyha's website and try again."
             })
@@ -280,6 +304,7 @@ class FaseyhaWalletActivity : Activity() {
             }
             if(ref!=null){
                 receiptCache[ref]=parsed
+                saveVerifiedReceipts()
                 state.text="Receipt details retrieved for the selected transaction. Return to Wallet to view updated details."
                 AlertDialog.Builder(this).setTitle("Provider receipt details")
                     .setMessage("Reference: "+ref+
@@ -293,6 +318,79 @@ class FaseyhaWalletActivity : Activity() {
                     }.setNegativeButton("Remain on receipt",null).show()
             }
         }
+    }
+
+
+    private fun loadVerifiedReceipts(){
+        val saved=getSharedPreferences("verified_faseyha_receipts",MODE_PRIVATE).getString("items","{}") ?: "{}"
+        try {
+            val obj=JSONObject(saved)
+            for(key in obj.keys()){
+                val data=obj.optJSONObject(key) ?: continue
+                if(key.equals(data.optString("reference"),true) && key.matches(Regex("[A-Za-z0-9]{8,45}")))
+                    receiptCache[key]=data
+            }
+        }catch(_:Exception){}
+    }
+
+    private fun saveVerifiedReceipts(){
+        val obj=JSONObject()
+        receiptCache.entries.toList().takeLast(500).forEach{(ref,data)->obj.put(ref,data)}
+        getSharedPreferences("verified_faseyha_receipts",MODE_PRIVATE)
+            .edit().putString("items",obj.toString()).apply()
+    }
+
+    private fun enqueueMissingReceipts(){
+        if(receiptBusy || automaticReceiptReads>=12) return
+        val queued=receiptQueue.map{it.first}.toSet()
+        for((ref,row) in records){
+            if(receiptCache.containsKey(ref) || queued.contains(ref)) continue
+            val u=Uri.parse(row.optString("url"))
+            if(u.scheme!="https" || !trusted(u.host) || u.path?.startsWith("/invoice/")!=true)continue
+            receiptQueue.addLast(ref to u.toString())
+            if(receiptQueue.size>=12-automaticReceiptReads)break
+        }
+        startAutomaticReceipt()
+    }
+
+    private fun startAutomaticReceipt(){
+        if(receiptBusy || receiptQueue.isEmpty() || automaticReceiptReads>=12) return
+        receiptBusy=true
+        automaticReceiptReads++
+        receiptWeb.loadUrl(receiptQueue.first().second)
+    }
+
+    private fun inspectAutomaticReceipt(){
+        val selected=receiptQueue.firstOrNull() ?: return
+        val js="""(function(){
+            const t=document.body.innerText||'';
+            const ref=(t.match(/receipt\s*(?:no\.?|number)\s*:?\s*([A-Z0-9]{8,45})/i)||[])[1]||'';
+            const amount=(t.match(/(?:total amount|amount paid)\s*(?:MVR|Rf|ރ|ރ\.)?\s*([\d,]+(?:\.\d{1,2})?)/i)||[])[1]||'';
+            const service=(t.match(/description\s+([\s\S]{0,120}?)(?:total amount|amount paid)/i)||[])[1]||'';
+            const billTo=(t.match(/bill to\s+([A-Z0-9-]{5,32})/i)||[])[1]||'';
+            const candidates=(service.match(/\b[A-Z0-9-]{7,30}\b/gi)||[]).filter(x=>/\d/.test(x));
+            const account=candidates.find(x=>/^BB/i.test(x))||candidates[candidates.length-1]||billTo;
+            return JSON.stringify({reference:ref,account:account,amount:amount,status:/\bpaid in full\b/i.test(t)?'Paid in full':'Not identified'});
+        })();"""
+        receiptWeb.evaluateJavascript(js){raw->
+            val obj=decode(raw)
+            if(obj!=null && selected.first.equals(obj.optString("reference"),true)){
+                receiptCache[selected.first]=obj
+                saveVerifiedReceipts()
+                if(!isFinishing) {
+                    state.text="Verified receipt details retrieved."
+                    if(wallet()) scan()
+                }
+            }
+            finishAutomaticReceipt()
+        }
+    }
+
+    private fun finishAutomaticReceipt(){
+        if(receiptQueue.isNotEmpty())receiptQueue.removeFirst()
+        receiptBusy=false
+        if(!isFinishing && automaticReceiptReads<12 && receiptQueue.isNotEmpty())
+            receiptWeb.postDelayed({startAutomaticReceipt()},350)
     }
 
     private fun loadMore(){
