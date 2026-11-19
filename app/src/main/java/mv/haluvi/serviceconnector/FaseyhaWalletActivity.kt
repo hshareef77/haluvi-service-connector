@@ -19,6 +19,7 @@ import org.json.JSONObject
 class FaseyhaWalletActivity : Activity() {
     private lateinit var web:WebView
     private lateinit var state:TextView
+    private lateinit var balanceView:TextView
     private lateinit var list:LinearLayout
     private lateinit var selector:Button
     private var category="Recharges"
@@ -41,9 +42,10 @@ class FaseyhaWalletActivity : Activity() {
         super.onCreate(savedInstanceState)
         loadVerifiedReceipts()
         val root=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL;setPadding(20,12,20,12)}
-        root.addView(TextView(this).apply{text="Faseyha Wallet and Transactions";textSize=23f
+        root.addView(TextView(this).apply{text="Faseyha Wallet";textSize=23f
             if(android.os.Build.VERSION.SDK_INT>=28)isAccessibilityHeading=true})
-        root.addView(TextView(this).apply{text="Read-only provider history. Recharges includes customer and wholesale purchases. Payments contains deposits. Never use a history entry alone to fulfill an HaluviPay order."})
+        balanceView=TextView(this).apply{text="Balance: loading…";textSize=20f;accessibilityLiveRegion=View.ACCESSIBILITY_LIVE_REGION_POLITE}
+        root.addView(balanceView)
         state=TextView(this).apply{text="Opening Wallet...";textSize=17f;accessibilityLiveRegion=View.ACCESSIBILITY_LIVE_REGION_POLITE}
         root.addView(state)
         fun add(label:String,fn:()->Unit)=root.addView(Button(this).apply{text=label;minHeight=buttonHeight;setOnClickListener{fn()}})
@@ -51,7 +53,6 @@ class FaseyhaWalletActivity : Activity() {
         root.addView(selector)
         add("Refresh transactions"){autoLoads=0;previousAutoCount=-1;records.clear();list.removeAllViews();web.loadUrl("https://faseyha.net/wallet")}
         add("Load older transactions"){loadMore()}
-        add("Close Wallet"){finish()}
         advanced=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL;visibility=View.GONE}
         root.addView(Button(this).apply{text="Advanced wallet controls";minHeight=buttonHeight;setOnClickListener{
             advanced.visibility=if(advanced.visibility==View.GONE)View.VISIBLE else View.GONE
@@ -61,6 +62,7 @@ class FaseyhaWalletActivity : Activity() {
         fun diagnostic(label:String,fn:()->Unit)=advanced.addView(Button(this).apply{text=label;minHeight=buttonHeight;setOnClickListener{fn()}})
         diagnostic("Retrieve displayed transactions"){scan()}
         diagnostic("Maximum records"){chooseLimit()}
+        diagnostic("Close Wallet"){finish()}
         diagnostic("Open dashboard"){web.loadUrl("https://faseyha.net/dashboard")}
         diagnostic("Open wallet website"){web.loadUrl("https://faseyha.net/wallet")}
         list=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL}
@@ -221,9 +223,8 @@ class FaseyhaWalletActivity : Activity() {
                 val key=row.optString("reference").ifBlank{row.optString("url")}
                 if(key.isNotBlank()&&records.size<limit)records[key]=row
             }
-            state.text="Wallet category: "+category+". Balance displayed: MVR "+
-                obj.optString("balance","unknown")+". "+records.size+" entries. "+
-                (if(obj.optBoolean("more"))"Load More available."else"No Load More button detected.")
+            balanceView.text="Balance: MVR "+obj.optString("balance","unknown")
+            state.text=category+": "+records.size+" transactions"+(if(obj.optBoolean("more"))". More available." else ".")
             list.removeAllViews()
             if(category=="Recharges") enqueueMissingReceipts()
             if(records.isEmpty())list.addView(TextView(this).apply{
