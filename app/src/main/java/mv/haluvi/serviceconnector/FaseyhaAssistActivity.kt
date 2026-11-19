@@ -686,14 +686,29 @@ class FaseyhaAssistActivity : Activity() {
             let old=window.__haluviBeforeSubmit||[];
             if(!old.length){try{old=JSON.parse(sessionStorage.getItem("haluvi_before_submit")||"[]");}catch(e){}}
             const oldSet=new Set(old.map(clean));
-            // Detect the provider's SECOND-STAGE confirmation before looking for
-            // success messages. The first Recharge click may only open this dialog.
-            const shown=x=>x.getClientRects().length>0 && getComputedStyle(x).visibility!=='hidden';
+            // The first Recharge click can open a provider confirmation modal.
+            const visible=x=>x.getClientRects().length>0 && getComputedStyle(x).visibility!=='hidden';
             const desired=__ACTION__.toLowerCase();
-            const headingText=desired==='Recharge'?'confirm recharge':
-                desired==='Pay'?'confirm (?:bill )?pay(?:ment)?':
-                'confirm (?:package|activation)';
-            const hRe=new RegExp('^'+headingText+'
+            const titleRe=desired==='Recharge'?/^confirm recharge$/i:desired==='Pay'?/^confirm (?:bill )?pay(?:ment)?$/i:/^confirm (?:package|activation)$/i;
+            const heads=Array.from(document.querySelectorAll('h1,h2,h3,h4,[role="heading"],strong'))
+              .filter(visible).filter(x=>titleRe.test(clean(x.innerText||x.textContent)));
+            let confirmation=null;
+            for(const h of heads){
+              let p=h;
+              for(let d=0;p&&d<9;d++,p=p.parentElement){
+                const body=clean(p.innerText||'');
+                if(body.length>1100)break;
+                const buttons=Array.from(p.querySelectorAll('button,[role="button"],input[type="submit"]')).filter(visible);
+                const label=x=>clean(x.innerText||x.value||x.getAttribute('aria-label'));
+                const cancels=buttons.filter(x=>/^(cancel|back|close|no)$/i.test(label(x)));
+                const positives=buttons.filter(x=>/^(confirm(?: recharge| payment| bill payment| package| activation)?|yes,? (?:recharge|confirm|pay|activate)|proceed(?: with (?:recharge|payment))?|recharge now|pay now|activate now)$/i.test(label(x)));
+                if(cancels.length>=1&&positives.length===1){
+                  confirmation={summary:body,positive:label(positives[0])};break;
+                }
+              }
+              if(confirmation)break;
+            }
+            if(confirmation)return JSON.stringify({classification:'Awaiting confirmation',message:confirmation.summary,actionLabel:confirmation.positive,pathname:location.pathname});
             const notices=Array.from(document.querySelectorAll('[role="alert"],[role="status"],[aria-live],.toast,.notification,.alert,[role="dialog"]'))
                 .filter(x=>x.getClientRects().length>0 && getComputedStyle(x).visibility!=='hidden')
                 .map(x=>clean(x.innerText||x.textContent)).filter(x=>x && x.length<500 && !oldSet.has(x));
