@@ -37,7 +37,6 @@ class FaseyhaAssistActivity : Activity() {
     private var billOperatorIndex = 0
     private var pendingOperator = false
     private var pendingPreparation = false
-    private var operatorApplying = false
     private var submissionAttempted = false
     private lateinit var packageCategory: Button
     private lateinit var packageChoice: Button
@@ -170,7 +169,7 @@ class FaseyhaAssistActivity : Activity() {
                         pendingOperator = false
                         web.postDelayed({ if (isTrusted() && Uri.parse(web.url ?: "").path == selectedPath()) applyOperator(false) }, 450)
                     }
-                    if (pendingPreparation && !operatorApplying && !pendingOperator && isTrusted() && Uri.parse(url).path == selectedPath()) {
+                    else if (pendingPreparation && !pendingOperator && isTrusted() && Uri.parse(url).path == selectedPath()) {
                         pendingPreparation = false
                         web.postDelayed({ prepareWhenReady(0) }, 1200)
                     }
@@ -619,7 +618,13 @@ class FaseyhaAssistActivity : Activity() {
                     try {
                         val result = JSONObject(org.json.JSONArray("[$raw]").getString(0))
                         state.text = if (result.optBoolean("ok")) "Operator selection requested. Verify the operator in the Faseyha order summary." else result.optString("reason")
-                        if (showDialog || !result.optBoolean("ok")) message(state.text.toString())
+                        if (pendingPreparation && !showDialog) {
+                            pendingPreparation = false
+                            if (result.optBoolean("ok")) {
+                                state.text = "Operator selected. Preparing provider form…"
+                                web.postDelayed({ if(isTrusted() && Uri.parse(web.url ?: "").path==selectedPath()) prepareWhenReady(0) },1100)
+                            } else message("Operator selection was not confirmed. No form or payment submitted. Select the operator on the website and tap Continue again.")
+                        } else if (showDialog || !result.optBoolean("ok")) message(state.text.toString())
                     } catch (_: Exception) { message("Operator selection could not be confirmed. Inspect the provider page manually.") }
                 }
             }
