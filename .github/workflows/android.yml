@@ -95,5 +95,5 @@ jobs:
           gh release create "$tag" "$output" --target "$GITHUB_SHA" --latest --title "Haluvi Service Connector ${tag}" --notes "Permanently signed APK. Accessible selected-state native service and operator controls; saved-session Faseyha Wallet and transaction history; read-only receipts; manual payment authorization. No unattended customer transactions."
           # Ensure the release is actually published and its APK attached, not merely an Actions artifact.
           gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${tag}" --jq '.draft == false and (.assets | length) > 0' | grep -qx true
-          gh release view "$tag" --json url,assets,isLatest --jq '{url: .url, assets: [.assets[].name], isLatest: .isLatest}'
+          gh release view "$tag" --json url,assets --jq '{url: .url, assets: [.assets[].name]}'
           echo "Release page: https://github.com/${GITHUB_REPOSITORY}/releases/tag/${tag}" >> "$GITHUB_STEP_SUMMARY"
