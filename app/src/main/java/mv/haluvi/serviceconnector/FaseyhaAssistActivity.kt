@@ -522,10 +522,10 @@ class FaseyhaAssistActivity : Activity() {
             const candidates=Array.from(document.querySelectorAll('button,input[type="submit"],[role="button"]'))
                 .filter(visible).filter(x=>matchesAction(x,action));
             function matchesAction(x,a){
-                const label=tidy([x.innerText,x.value,x.getAttribute('aria-label')].filter(Boolean).join(' ')).toLowerCase();
-                return a==='Recharge'?/^recharge(?:\s+(?:mvr|rf|ރ)?\s*\d[\d,.]*)?$/.test(label):
+                const labels=[x.innerText,x.value,x.getAttribute('aria-label')].filter(Boolean).map(v=>tidy(v).toLowerCase());
+                return labels.some(label=>a==='Recharge'?/^recharge(?:\s+(?:mvr|rf|ރ)?\s*\d[\d,.]*)?$/.test(label):
                     a==='Pay'?/^pay(?:\s+(?:mvr|rf|ރ)?\s*\d[\d,.]*)?$/.test(label):
-                    /^activate package(?:\s+(?:mvr|rf|ރ)?\s*\d[\d,.]*)?$/.test(label);
+                    /^activate package(?:\s+(?:mvr|rf|ރ)?\s*\d[\d,.]*)?$/.test(label));
             }
             const enabled=candidates.filter(x=>!x.disabled && x.getAttribute('aria-disabled')!=='true' && getComputedStyle(x).pointerEvents!=='none');
             return JSON.stringify({summary:summary,found:candidates.length,enabled:enabled.length});
