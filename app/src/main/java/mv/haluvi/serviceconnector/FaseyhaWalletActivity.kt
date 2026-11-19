@@ -122,20 +122,30 @@ class FaseyhaWalletActivity : Activity() {
             .filter(a=>/^(receipt|tax invoice)$/i.test((a.innerText||'').trim())||/\/invoice\//i.test(a.href));
           const rows=[];
           for(const a of links){
-            let n=a;
-            for(let i=0;i<6&&n;i++,n=n.parentElement){
-              const text=(n.innerText||'').replace(/\s+/g,' ').trim();
-              if(text.length<22||text.length>550)continue;
-              if(!/receipt|tax invoice|successful|completed|processing|failed/i.test(text))continue;
-              const reference=(text.match(/\b(?:FR|BLA)[A-Z0-9]{8,40}\b/i)||[])[0]||'';
-              const status=(text.match(/\b(successful|completed|processing|pending|failed|submitted)\b/i)||[])[1]||'Not shown';
-              const url=a.href;
-              if(!rows.some(r=>r.url===url))rows.push({reference:reference,status:status,description:text.slice(0,400),url:url});
-              break;
+            let n=a,chosen='';
+            for(let i=0;i<9&&n;i++,n=n.parentElement){
+              const txt=(n.innerText||'').replace(/\s+/g,' ').trim();
+              const hasRef=/\b(?:FR|BLA)[A-Z0-9]{8,40}\b/i.test(txt);
+              const hasStatus=/\b(successful|completed|processing|pending|failed|submitted)\b/i.test(txt);
+              const hasMoney=/[ރ]?\s*[+-]?\s*[\d,]+(?:\.\d{1,2})?/.test(txt);
+              if(hasRef && hasStatus && hasMoney && txt.length<=650 && txt.length>=20){chosen=txt;break;}
             }
+            if(!chosen){
+              // Do not associate reference-only receipt links with another transaction.
+              continue;
+            }
+            const reference=(chosen.match(/\b(?:FR|BLA)[A-Z0-9]{8,40}\b/i)||[])[0]||'';
+            const status=(chosen.match(/\b(successful|completed|processing|pending|failed|submitted)\b/i)||[])[1]||'Not shown';
+            const service=chosen.split(reference)[0].replace(/\s+/g,' ').trim().slice(0,90)||'Unknown service';
+            const date=(chosen.match(/\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2}(?:,\s*|\s+)\d{1,2}:\d{2}\s*(?:AM|PM)\b/i)||[])[0]||'Date not identified';
+            const moneyCandidates=[...chosen.matchAll(/(?:MVR|ރ|Rf)\s*([+-]?\s*[\d,]+(?:\.\d{1,2})?)/gi)];
+            const price=moneyCandidates.length?moneyCandidates[moneyCandidates.length-1][1].trim():'';
+            let url='';try{const u=new URL(a.href);if(u.protocol==='https:'&&(u.hostname==='faseyha.net'||u.hostname.endsWith('.faseyha.net')))url=u.href}catch(e){}
+            if(reference&&!rows.some(r=>r.reference===reference))
+              rows.push({reference:reference,status:status,service:service,date:date,price:price,description:chosen.slice(0,550),url:url});
           }
           const more=Array.from(document.querySelectorAll('button,[role="button"]'))
-             .some(x=>x.getClientRects().length&&/^load more$/i.test((x.innerText||x.getAttribute('aria-label')||'').trim()));
+            .some(x=>x.getClientRects().length&&/^load more$/i.test((x.innerText||x.getAttribute('aria-label')||'').trim()));
           return JSON.stringify({balance:amount,rows:rows.slice(0,500),more:more});
         })();"""
         web.evaluateJavascript(js){raw->
@@ -155,13 +165,19 @@ class FaseyhaWalletActivity : Activity() {
                 text="No transactions recognized. Select the category on Faseyha's website and try again."
             })
             records.values.forEach{row->
-                val desc=row.optString("description").take(200)
+                val service=row.optString("service","Unknown service")
+                val wholesale=service.contains("wholesale",true)
                 val kind=if(category=="Payments")"Wallet deposit"
-                    else if(desc.contains("wholesale",true))"Wholesale, not a customer recharge"
+                    else if(wholesale)"Wholesale purchase"
                     else "Customer transaction candidate"
+                val date=row.optString("date","Date not identified")
+                val price=row.optString("price").ifBlank{"amount unavailable"}
+                val status=row.optString("status","Not shown")
+                val summary="$kind. $service. MVR $price. $status. $date."
                 list.addView(Button(this).apply{
                     minHeight=buttonHeight
-                    text="$kind. $desc. View details"
+                    text="$summary View details"
+                    contentDescription="$summary View details and transaction reference."
                     setOnClickListener{detail(row,kind)}
                 })
             }
@@ -170,8 +186,8 @@ class FaseyhaWalletActivity : Activity() {
     private fun detail(row:JSONObject,kind:String){
         val u=Uri.parse(row.optString("url"))
         AlertDialog.Builder(this).setTitle(kind)
-            .setMessage(row.optString("description")+"\n\nProvider status: "+row.optString("status")+
-                "\nReference: "+row.optString("reference")+
+            .setMessage("Service: "+row.optString("service")+"\nAmount: MVR "+row.optString("price").ifBlank{"not identified"}+"\nDate: "+row.optString("date")+"\n\nProvider status: "+row.optString("status")+
+                "\nTransaction reference: "+row.optString("reference")+
                 "\nWebsite evidence only. Final delivery and order matching have not been verified.")
             .setPositiveButton("Open provider receipt"){_,_->
                 if(u.scheme=="https"&&trusted(u.host))web.loadUrl(u.toString())
