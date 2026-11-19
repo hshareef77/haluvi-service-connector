@@ -37,6 +37,7 @@ class FaseyhaAssistActivity : Activity() {
     private var billOperatorIndex = 0
     private var pendingOperator = false
     private var pendingPreparation = false
+    private var operatorApplying = false
     private var submissionAttempted = false
     private lateinit var packageCategory: Button
     private lateinit var packageChoice: Button
@@ -67,7 +68,7 @@ class FaseyhaAssistActivity : Activity() {
         val title = TextView(this).apply { text = "Faseyha assisted recharge"; textSize = 22f; if (android.os.Build.VERSION.SDK_INT >= 28) isAccessibilityHeading = true }
         layout.addView(title)
         layout.addView(TextView(this).apply {
-            text = "Choose service and operator. For Packages, choose a category and browse provider packages. Enter recipient and amount where required. Confirm details before manually authorizing payment."
+            text = "Choose service, operator, and recipient. For packages select a package. Review the actual provider total before confirming a payment."
         })
         service = Button(this).apply {
             minHeight = 56.dp
@@ -111,7 +112,7 @@ class FaseyhaAssistActivity : Activity() {
                 text = label; minHeight = 48.dp; setOnClickListener { work() }
             })
         }
-        primary.addView(Button(this).apply { text = "Continue — prepare and review, do not pay"; minHeight = 56.dp; setOnClickListener { prepareSelectedService() } })
+        primary.addView(Button(this).apply { text = "Continue — prepare and review"; minHeight = 56.dp; setOnClickListener { prepareSelectedService() } })
 
 
         primary.addView(Button(this).apply { text = "Faseyha Wallet and Transactions"; minHeight = 56.dp; setOnClickListener {
@@ -169,9 +170,9 @@ class FaseyhaAssistActivity : Activity() {
                         pendingOperator = false
                         web.postDelayed({ if (isTrusted() && Uri.parse(web.url ?: "").path == selectedPath()) applyOperator(false) }, 450)
                     }
-                    if (pendingPreparation && isTrusted() && Uri.parse(url).path == selectedPath()) {
+                    if (pendingPreparation && !operatorApplying && !pendingOperator && isTrusted() && Uri.parse(url).path == selectedPath()) {
                         pendingPreparation = false
-                        web.postDelayed({ prepareWhenReady(0) }, 650)
+                        web.postDelayed({ prepareWhenReady(0) }, 1200)
                     }
                     if (isTrusted()) state.text = if (Uri.parse(url).path.isNullOrBlank() || Uri.parse(url).path == "/") "Faseyha homepage loaded. Open Dashboard and a payment form in the website below before inspecting." else "Faseyha page loaded. Open the relevant number and amount form, then inspect."
                     else state.text = "This page is outside faseyha.net. The native field assistant is disabled."
@@ -280,9 +281,9 @@ class FaseyhaAssistActivity : Activity() {
             return
         }
         if (Uri.parse(web.url ?: "").path != expected) {
+            openFaseyhaPath(expected)
             pendingOperator = true
             pendingPreparation = true
-            openFaseyhaPath(expected)
             state.text = "Opening provider service and preparing automatically."
             return
         }
@@ -292,11 +293,11 @@ class FaseyhaAssistActivity : Activity() {
     private fun prepareWhenReady(attempt:Int) {
         if (!isTrusted() || Uri.parse(web.url ?: "").path != selectedPath()) return
         if (serviceIndex == 1) { prepare(); return }
-        if(attempt>=8) { message("Provider form is not ready. No payment was submitted."); return }
+        if(attempt>=15) { message("Provider form is not ready. Check operator selection and try Continue again. No payment was submitted."); return }
         val js = """(function(){return Array.from(document.querySelectorAll('input')).filter(x=>x.getClientRects().length>0 && !x.disabled && !x.readOnly && !/hidden|password|submit|button|radio|checkbox/.test(x.type)).length})()"""
         web.evaluateJavascript(js) { raw ->
             if ((raw.trim().toIntOrNull() ?: 0) >= 2) prepare()
-            else web.postDelayed({ prepareWhenReady(attempt+1) },450)
+            else web.postDelayed({ prepareWhenReady(attempt+1) },650)
         }
     }
 
@@ -453,7 +454,7 @@ class FaseyhaAssistActivity : Activity() {
         }
     }
 
-    private fun fill(target: String, money: String) {
+    private fun fill(target: String, money: String, attempt: Int = 0) {
         if (!isTrusted() || Uri.parse(web.url ?: "").path != selectedPath()) { message("The website changed. Reopen the selected Faseyha page."); return }
         // Serialize arguments through JSONObject.quote, never interpolate raw user input into JavaScript.
         val js = """(function(number,amount){
@@ -465,8 +466,9 @@ class FaseyhaAssistActivity : Activity() {
            let num=fields.filter(x=>/(mobile|phone|number|account|subscriber|service|7xxxxxxx)/.test(label(x)));
            let amt=fields.filter(x=>/(amount|price|pay|mvr)/.test(label(x)));
            if((num.length!==1||amt.length!==1||num[0]===amt[0])&&fields.length===2){
-             const numeric=fields.filter(x=>x.type==='number'||/amount|mvr|price/i.test(label(x)));
+             const numeric=fields.filter(x=>/amount|mvr|price/i.test(label(x)));
              if(numeric.length===1){amt=numeric;num=fields.filter(x=>x!==amt[0]);}
+             else if(fields.length===2){num=[fields[0]];amt=[fields[1]];}
            }
            if(num.length!==1 || amt.length!==1 || num[0]===amt[0])
              return JSON.stringify({ok:false,n:num.length,a:amt.length,reason:'Found '+num.length+' number fields and '+amt.length+' amount fields; need exactly one of each'});
@@ -492,7 +494,9 @@ class FaseyhaAssistActivity : Activity() {
                     }
                 }
                 state.text = if (ok) "Fields match. Preparing final review." else "Form not prepared: ${data.optString("reason")}. Check the current service form."
-                if(ok) web.postDelayed({ reviewFinalAction(target,money) },450) else message(state.text.toString())
+                if(ok) web.postDelayed({ reviewFinalAction(target,money) },450)
+                else if(attempt<8 && data.optInt("n",0)==0 && data.optInt("a",0)==0) web.postDelayed({fill(target,money,attempt+1)},650)
+                else message(state.text.toString())
             } catch (e: Exception) { message("Unable to verify form filling. Do not assume the fields were completed.") }
         }
     }
