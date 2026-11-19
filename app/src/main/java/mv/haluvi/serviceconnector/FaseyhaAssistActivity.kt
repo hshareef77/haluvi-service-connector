@@ -33,7 +33,10 @@ class FaseyhaAssistActivity : Activity() {
     private var operatorIndex = 0
     private val services = arrayOf("Recharge", "Package Recharge", "Bill Pay")
     private val operators = arrayOf("Ooredoo", "Dhiraagu")
+    private val billOperators = arrayOf("Dhiraagu", "Ooredoo", "Medianet")
+    private var billOperatorIndex = 0
     private var pendingOperator = false
+    private lateinit var packageCategory: Button
     private lateinit var state: TextView
     private var homeUrl: String = "https://faseyha.net"
     private var prepared = false
@@ -59,7 +62,7 @@ class FaseyhaAssistActivity : Activity() {
         val title = TextView(this).apply { text = "Faseyha assisted recharge"; textSize = 22f; if (android.os.Build.VERSION.SDK_INT >= 28) isAccessibilityHeading = true }
         layout.addView(title)
         layout.addView(TextView(this).apply {
-            text = "Choose service and operator, enter recipient and (for Recharge/Bill Pay) amount. Prepare the form and review Faseyha order summary. Package and payment controls remain with Faseyha."
+            text = "Choose service and operator. For Packages, choose a category and browse provider packages. Enter recipient and amount where required. Confirm details before manually authorizing payment."
         })
         service = Button(this).apply {
             minHeight = 56.dp
@@ -140,7 +143,7 @@ class FaseyhaAssistActivity : Activity() {
                     CookieManager.getInstance().flush()
                     prepared = false
                     lastPreparedSignature = null
-                    if (pendingOperator && isTrusted() && Uri.parse(url).path == selectedPath() && serviceIndex != 2) {
+                    if (pendingOperator && isTrusted() && Uri.parse(url).path == selectedPath()) {
                         pendingOperator = false
                         web.postDelayed({ if (isTrusted() && Uri.parse(web.url ?: "").path == selectedPath()) applyOperator(false) }, 450)
                     }
@@ -162,9 +165,11 @@ class FaseyhaAssistActivity : Activity() {
     private fun updateSelections() {
         service.text = "Service: " + services[serviceIndex] + ". Select to change"
         service.contentDescription = "Service, selected " + services[serviceIndex] + ". Double tap to change."
-        operator.text = "Operator: " + operators[operatorIndex] + ". Select to change"
-        operator.contentDescription = "Operator, selected " + operators[operatorIndex] + ". Double tap to change."
-        operator.visibility = if (serviceIndex == 2) View.GONE else View.VISIBLE
+        val currentOperator = if (serviceIndex == 2) billOperators[billOperatorIndex] else operators[operatorIndex]
+        operator.text = "Operator: " + currentOperator + ". Select to change"
+        operator.contentDescription = "Operator, selected " + currentOperator + ". Double tap to change."
+        operator.visibility = View.VISIBLE
+        if (::packageCategory.isInitialized) packageCategory.visibility = if (serviceIndex == 1) View.VISIBLE else View.GONE
         if (::amount.isInitialized) {
             amount.visibility = if (serviceIndex == 1) View.GONE else View.VISIBLE
             amount.isEnabled = serviceIndex != 1
@@ -179,27 +184,53 @@ class FaseyhaAssistActivity : Activity() {
                 if (serviceIndex != selected) {
                     serviceIndex = selected
                     updateSelections()
-                    pendingOperator = selected != 2
+                    pendingOperator = true
                     openFaseyhaPath(selectedPath())
                 }
             }.setNegativeButton("Cancel", null).show()
     }
 
     private fun chooseOperator() {
-        AlertDialog.Builder(this).setTitle("Choose operator. Currently " + operators[operatorIndex])
-            .setSingleChoiceItems(operators, operatorIndex) { dialog, selected ->
+        val choices = if (serviceIndex == 2) billOperators else operators
+        val index = if (serviceIndex == 2) billOperatorIndex else operatorIndex
+        AlertDialog.Builder(this).setTitle("Choose operator. Currently " + choices[index])
+            .setSingleChoiceItems(choices, index) { dialog, selected ->
                 dialog.dismiss()
-                operatorIndex = selected
+                if (serviceIndex == 2) billOperatorIndex = selected else operatorIndex = selected
                 updateSelections()
-                if (serviceIndex != 2) {
-                    if (isTrusted() && Uri.parse(web.url ?: "").path == selectedPath()) {
-                        applyOperator(false)
-                    } else {
-                        pendingOperator = true
-                        openFaseyhaPath(selectedPath())
-                    }
+                if (isTrusted() && Uri.parse(web.url ?: "").path == selectedPath()) {
+                    applyOperator(false)
+                } else {
+                    pendingOperator = true
+                    openFaseyhaPath(selectedPath())
                 }
             }.setNegativeButton("Cancel", null).show()
+    }
+
+    private fun chooseNativePackageCategory() {
+        if (serviceIndex != 1) return
+        if (!isTrusted() || Uri.parse(web.url ?: "").path != "/packages") {
+            openFaseyhaPath("/packages")
+            state.text = "Package page opening. Choose a category again after the website loads."
+            return
+        }
+        val js = """(function(){
+          const tidy=x=>(x||'').replace(/\s+/g,' ').trim();
+          const names=Array.from(document.querySelectorAll('button,[role="tab"],[role="button"]'))
+            .filter(x=>x.getClientRects().length>0 && !x.disabled)
+            .map(x=>tidy(x.innerText||x.getAttribute('aria-label')||''))
+            .filter(x=>/^(all|special offer|mini data plans|weekly|monthly|data|call only|salhi|[0-9]+ ?gb)$/i.test(x))
+            .filter((x,i,a)=>a.indexOf(x)===i);
+          return JSON.stringify({categories:names});
+        })();"""
+        web.evaluateJavascript(js) { raw ->
+            try {
+                val arr=JSONObject(org.json.JSONArray("[$raw]").getString(0)).getJSONArray("categories")
+                if (arr.length()==0) {
+                    message("No readable category selector was found. Select the category on Faseyha's website, then browse packages.")
+                } else choosePackageGroup(Array(arr.length()){i->arr.getString(i)})
+            } catch (_: Exception) { message("Unable to retrieve package categories from Faseyha.") }
+        }
     }
 
     private fun selectedPath(): String = when (serviceIndex) {
@@ -215,7 +246,7 @@ class FaseyhaAssistActivity : Activity() {
             return
         }
         if (Uri.parse(web.url ?: "").path != expected) {
-            pendingOperator = serviceIndex != 2
+            pendingOperator = true
             openFaseyhaPath(expected)
             state.text = "Service page opened. After it loads, select Prepare form again. No payment was submitted."
             return
@@ -376,12 +407,11 @@ class FaseyhaAssistActivity : Activity() {
     }
 
     private fun applyOperator(showDialog: Boolean = true) {
-        if (serviceIndex == 2) { message("Bill Pay operator selection must be made on the website."); return }
         if (!isTrusted() || Uri.parse(web.url ?: "").path != selectedPath()) {
             message("Open the selected Faseyha service page before choosing an operator.")
             return
         }
-        val name = operators[operatorIndex]
+        val name = if (serviceIndex == 2) billOperators[billOperatorIndex] else operators[operatorIndex]
         run {
                 val js = """(function(name){
                    const visible=x=>x.getClientRects().length>0 && getComputedStyle(x).visibility!=='hidden';
@@ -468,12 +498,14 @@ class FaseyhaAssistActivity : Activity() {
                    const match=nodes.filter(x=>tidy(x.innerText||x.getAttribute('aria-label'))===tidy(wanted));
                    if(match.length!==1) return JSON.stringify({reason:'Category not unique; select on the website.'});
                    match[0].click();
-                   return JSON.stringify({reason:'Category selected. Browse packages again to refresh.'});
+                   return JSON.stringify({reason:'Category selected. Browse packages to review current results.'});
                 })(__GROUP__);""".replace("__GROUP__",JSONObject.quote(groups[index]))
                 web.evaluateJavascript(js){raw->
                     try {
                         val result=JSONObject(org.json.JSONArray("[$raw]").getString(0))
-                        message(result.optString("reason") + "\nCategory filtering never activates or buys a package.")
+                        packageCategory.text = "Package category: " + groups[index] + ". Choose category"
+                        packageCategory.contentDescription = "Package category, selected " + groups[index] + ". Choose category."
+                        state.text = result.optString("reason") + " No package activated."
                     }catch (_:Exception){message("Could not confirm category selection.")}
                 }
             }.setNegativeButton("Cancel",null).show()
