@@ -177,7 +177,7 @@ class FaseyhaAssistActivity : Activity() {
                         web.postDelayed({ prepareWhenReady(0) }, 1200)
                     }
                     if (!observingProviderResult && isTrusted()) state.text = if (Uri.parse(url).path.isNullOrBlank() || Uri.parse(url).path == "/") "Faseyha homepage loaded. Open Dashboard and a payment form in the website below before inspecting." else "Faseyha page loaded. Open the relevant number and amount form, then inspect."
-                    else state.text = "This page is outside faseyha.net. The native field assistant is disabled."
+                    else if (!isTrusted()) state.text = "This page is outside faseyha.net. The native field assistant is disabled."
                 }
             }
         }
@@ -498,13 +498,51 @@ class FaseyhaAssistActivity : Activity() {
                     }
                 }
                 state.text = if (ok) "Fields match. Preparing final review." else "Form not prepared: ${data.optString("reason")}. Check the current service form."
-                if(ok) web.postDelayed({ reviewFinalAction(target,money) },450)
+                if(ok) web.postDelayed({ reviewWhenReady(target,money,0) },600)
                 else if(attempt<8 && data.optInt("n",0)==0 && data.optInt("a",0)==0) web.postDelayed({fill(target,money,attempt+1)},650)
                 else message(state.text.toString())
             } catch (e: Exception) { message("Unable to verify form filling. Do not assume the fields were completed.") }
         }
     }
 
+
+    // A reactive provider form can update its summary and enable the submit button
+    // AFTER native input/change events. Wait for the visible provider state to settle
+    // before displaying the final authorization dialog.
+    private fun reviewWhenReady(target:String,money:String,attempt:Int) {
+        if (!isTrusted() || Uri.parse(web.url ?: "").path!=selectedPath()) {
+            message("Provider page changed. Nothing was submitted.");return
+        }
+        val script="""(function(){
+            const tidy=x=>(x||'').replace(/\\s+/g,' ').trim();
+            const t=document.body.innerText||'',i=t.toLowerCase().lastIndexOf('order summary');
+            const summary=i<0?'':tidy(t.slice(i,i+900));
+            const visible=x=>x.getClientRects().length>0 && getComputedStyle(x).visibility!=='hidden';
+            const action=__ACTION__;
+            const candidates=Array.from(document.querySelectorAll('button,input[type="submit"],[role="button"]'))
+                .filter(visible).filter(x=>matchesAction(x,action));
+            function matchesAction(x,a){
+                const label=tidy([x.innerText,x.value,x.getAttribute('aria-label')].filter(Boolean).join(' ')).toLowerCase();
+                return a==='Recharge'?/^recharge(?:\\s+(?:mvr|rf|ރ)?\\s*\\d[\\d,.]*)?$/.test(label):
+                    a==='Pay'?/^pay(?:\\s+(?:mvr|rf|ރ)?\\s*\\d[\\d,.]*)?$/.test(label):
+                    /^activate package(?:\\s+(?:mvr|rf|ރ)?\\s*\\d[\\d,.]*)?$/.test(label);
+            }
+            const enabled=candidates.filter(x=>!x.disabled && x.getAttribute('aria-disabled')!=='true' && getComputedStyle(x).pointerEvents!=='none');
+            return JSON.stringify({summary:summary,found:candidates.length,enabled:enabled.length});
+        })();""".replace("__ACTION__",JSONObject.quote(if(serviceIndex==0)"Recharge" else "Pay"))
+        web.evaluateJavascript(script){raw->
+            try{
+                val data=JSONObject(org.json.JSONArray("[$raw]").getString(0))
+                if(data.optString("summary").isNotBlank() && data.optInt("enabled") == 1) {
+                    reviewFinalAction(target,money)
+                } else if(attempt<9) web.postDelayed({reviewWhenReady(target,money,attempt+1)},500)
+                else {
+                    state.text="Faseyha has not enabled a unique payment button. Verify its required fields below. No payment submitted."
+                    message(state.text.toString())
+                }
+            }catch(_:Exception){message("Unable to verify provider readiness. No payment submitted.")}
+        }
+    }
 
     private fun reviewFinalAction(target:String,money:String) {
         if(!isTrusted() || Uri.parse(web.url ?: "").path!=selectedPath()) {
@@ -573,10 +611,23 @@ class FaseyhaAssistActivity : Activity() {
                 if(action==='Recharge' && (!summary||!/\btotal\b/i.test(summary)))
                     return JSON.stringify({ok:false,reason:'Recharge summary missing'});
             }
-            const matches=Array.from(document.querySelectorAll('button,input[type="submit"]'))
-                .filter(x=>x.getClientRects().length>0&&!x.disabled)
-                .filter(x=>clean(x.innerText||x.value||x.getAttribute('aria-label')).toLowerCase()===action.toLowerCase());
-            if(matches.length!==1)return JSON.stringify({ok:false,reason:'Provider action button not unique: '+matches.length});
+            // The provider can display "Recharge 12.00" instead of just "Recharge".
+            // Never click if missing, disabled or ambiguous.
+            const visible=x=>x.getClientRects().length>0 && getComputedStyle(x).visibility!=='hidden';
+            const candidates=Array.from(document.querySelectorAll('button,input[type="submit"],[role="button"]'))
+                .filter(visible).filter(x=>{
+                    const raw=[x.innerText,x.value,x.getAttribute('aria-label')].filter(Boolean).map(clean);
+                    return raw.some(label=>{
+                        const value=label.toLowerCase();
+                        return action==='Recharge'?/^recharge(?:\\s+(?:mvr|rf|ރ)?\\s*\\d[\\d,.]*)?$/.test(value):
+                          action==='Pay'?/^pay(?:\\s+(?:mvr|rf|ރ)?\\s*\\d[\\d,.]*)?$/.test(value):
+                          /^activate package(?:\\s+(?:mvr|rf|ރ)?\\s*\\d[\\d,.]*)?$/.test(value);
+                    });
+                });
+            const matches=candidates.filter(x=>!x.disabled && x.getAttribute('aria-disabled')!=='true' && getComputedStyle(x).pointerEvents!=='none');
+            if(matches.length!==1)return JSON.stringify({ok:false,reason:matches.length===0?
+              'Faseyha action not enabled. Verify operator, recipient, amount or package on provider form (matching '+candidates.length+' disabled controls).':
+              'Ambiguous enabled provider actions: '+matches.length});
             window.__haluviBeforeSubmit=(document.body.innerText||"").split(/\n/).map(x=>x.trim()).filter(Boolean);
             try{sessionStorage.setItem('haluvi_before_submit',JSON.stringify(window.__haluviBeforeSubmit));}catch(e){}
             matches[0].click();return JSON.stringify({ok:true});
@@ -587,11 +638,11 @@ class FaseyhaAssistActivity : Activity() {
             .replace("__OP__",JSONObject.quote(op))
             .replace("__ACTION__",JSONObject.quote(action))
             .replace("__SUMMARY__",JSONObject.quote(reviewedSummary))
-        submissionAttempted=true
         web.evaluateJavascript(js){raw->
             try{
                 val obj=JSONObject(org.json.JSONArray("[$raw]").getString(0))
                 if(obj.optBoolean("ok")) {
+                    submissionAttempted=true
                     observingProviderResult=true
                     providerResultNoticeShown=false
                     state.text="Provider "+action+" button pressed once. Checking Faseyha response. Do not retry."
@@ -600,7 +651,7 @@ class FaseyhaAssistActivity : Activity() {
                     state.text="Submission blocked: "+obj.optString("reason")+". No provider transaction was confirmed."
                     message(state.text.toString())
                 }
-            }catch(_:Exception){message("Submission result uncertain. Check Wallet; do not retry automatically.")}
+            }catch(_:Exception){submissionAttempted=true;message("Submission result uncertain. Check Wallet; do not retry automatically.")}
         }
     }
 
