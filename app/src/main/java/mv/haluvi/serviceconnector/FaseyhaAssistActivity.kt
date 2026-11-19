@@ -514,7 +514,7 @@ class FaseyhaAssistActivity : Activity() {
             message("Provider page changed. Nothing was submitted.");return
         }
         val script="""(function(){
-            const tidy=x=>(x||'').replace(/\\s+/g,' ').trim();
+            const tidy=x=>(x||'').replace(/\s+/g,' ').trim();
             const t=document.body.innerText||'',i=t.toLowerCase().lastIndexOf('order summary');
             const summary=i<0?'':tidy(t.slice(i,i+900));
             const visible=x=>x.getClientRects().length>0 && getComputedStyle(x).visibility!=='hidden';
@@ -523,9 +523,9 @@ class FaseyhaAssistActivity : Activity() {
                 .filter(visible).filter(x=>matchesAction(x,action));
             function matchesAction(x,a){
                 const label=tidy([x.innerText,x.value,x.getAttribute('aria-label')].filter(Boolean).join(' ')).toLowerCase();
-                return a==='Recharge'?/^recharge(?:\\s+(?:mvr|rf|ރ)?\\s*\\d[\\d,.]*)?$/.test(label):
-                    a==='Pay'?/^pay(?:\\s+(?:mvr|rf|ރ)?\\s*\\d[\\d,.]*)?$/.test(label):
-                    /^activate package(?:\\s+(?:mvr|rf|ރ)?\\s*\\d[\\d,.]*)?$/.test(label);
+                return a==='Recharge'?/^recharge(?:\s+(?:mvr|rf|ރ)?\s*\d[\d,.]*)?$/.test(label):
+                    a==='Pay'?/^pay(?:\s+(?:mvr|rf|ރ)?\s*\d[\d,.]*)?$/.test(label):
+                    /^activate package(?:\s+(?:mvr|rf|ރ)?\s*\d[\d,.]*)?$/.test(label);
             }
             const enabled=candidates.filter(x=>!x.disabled && x.getAttribute('aria-disabled')!=='true' && getComputedStyle(x).pointerEvents!=='none');
             return JSON.stringify({summary:summary,found:candidates.length,enabled:enabled.length});
@@ -619,9 +619,9 @@ class FaseyhaAssistActivity : Activity() {
                     const raw=[x.innerText,x.value,x.getAttribute('aria-label')].filter(Boolean).map(clean);
                     return raw.some(label=>{
                         const value=label.toLowerCase();
-                        return action==='Recharge'?/^recharge(?:\\s+(?:mvr|rf|ރ)?\\s*\\d[\\d,.]*)?$/.test(value):
-                          action==='Pay'?/^pay(?:\\s+(?:mvr|rf|ރ)?\\s*\\d[\\d,.]*)?$/.test(value):
-                          /^activate package(?:\\s+(?:mvr|rf|ރ)?\\s*\\d[\\d,.]*)?$/.test(value);
+                        return action==='Recharge'?/^recharge(?:\s+(?:mvr|rf|ރ)?\s*\d[\d,.]*)?$/.test(value):
+                          action==='Pay'?/^pay(?:\s+(?:mvr|rf|ރ)?\s*\d[\d,.]*)?$/.test(value):
+                          /^activate package(?:\s+(?:mvr|rf|ރ)?\s*\d[\d,.]*)?$/.test(value);
                     });
                 });
             const matches=candidates.filter(x=>!x.disabled && x.getAttribute('aria-disabled')!=='true' && getComputedStyle(x).pointerEvents!=='none');
