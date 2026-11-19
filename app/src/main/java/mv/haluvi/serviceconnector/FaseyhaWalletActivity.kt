@@ -35,6 +35,10 @@ class FaseyhaWalletActivity : Activity() {
     private var automaticReceiptReads=0
     private var receiptBusy=false
     private var verificationAnnounced=false
+    private var verificationScans=0
+    private val verifyStartedAt by lazy { intent.getLongExtra("verify_started_at",0L) }
+    private val verifyPackage by lazy { intent.getStringExtra("verify_package").orEmpty().trim() }
+    private val receiptBatchLimit=30
     private val verifyRecipient by lazy { intent.getStringExtra("verify_recipient").orEmpty().trim() }
     private val verifyAmount by lazy { intent.getStringExtra("verify_amount").orEmpty().trim() }
     private val verifyOperator by lazy { intent.getStringExtra("verify_operator").orEmpty().trim() }
@@ -265,43 +269,79 @@ class FaseyhaWalletActivity : Activity() {
             java.math.BigDecimal(value.replace(",", "").trim()).setScale(2).toPlainString()
         } catch (_:Exception) { null }
     }
+    // Returns a recent timestamp only when the wallet's displayed date is
+    // parseable. Never use an undated/older entry as proof of a new charge.
+    private fun recentWalletEntry(date:String):Boolean {
+        if(verifyStartedAt<=0L) return false
+        return try {
+            val parser=java.text.SimpleDateFormat("MMM d, h:mm a",java.util.Locale.ENGLISH)
+            parser.isLenient=false
+            val parsed=parser.parse(date.replace(Regex("\\s+")," ").trim()) ?: return false
+            val now=java.util.Calendar.getInstance()
+            val calendar=java.util.Calendar.getInstance().apply {
+                time=parsed
+                set(java.util.Calendar.YEAR,now.get(java.util.Calendar.YEAR))
+            }
+            if(calendar.timeInMillis>System.currentTimeMillis()+24*60*60*1000L)
+                calendar.add(java.util.Calendar.YEAR,-1)
+            val difference=calendar.timeInMillis-verifyStartedAt
+            // Allow the provider clock a small offset; reject old transactions.
+            difference in -2*60*1000L..30*60*1000L
+        } catch (_:Exception) { false }
+    }
+
+    private fun normalizedRecipient(text:String)=text.replace(Regex("[^A-Za-z0-9]"),"")
+        .removePrefix("960").uppercase(java.util.Locale.ROOT)
+
     private fun checkRequestedTransaction() {
-        if (verificationAnnounced || category!="Recharges" || verifyRecipient.isBlank() ||
-            verifyAmount.isBlank() || verifyOperator.isBlank() || verifyService.isBlank()) return
-        val requestedAmount=normalizedMoney(verifyAmount) ?: return
+        if(verificationAnnounced || category!="Recharges" || verifyRecipient.isBlank() ||
+            verifyOperator.isBlank() || verifyService.isBlank()) return
+        val requestedAmount=normalizedMoney(verifyAmount)
+        // Package total is provider-generated, and must be corroborated by the receipt
+        // and a distinct recent wallet entry, not guessed from displayed package prices.
+        if(requestedAmount==null && verifyService!="Package Recharge")return
         val possible=records.values.filter { row ->
             val service=row.optString("service")
             if(service.contains("wholesale",true) ||
-               !service.contains(verifyOperator,true)) return@filter false
+               !service.contains(verifyOperator,true) ||
+               !recentWalletEntry(row.optString("date")))return@filter false
             val serviceMatch=when(verifyService) {
                 "Recharge" -> service.contains("reload",true) || service.contains("raastas",true) ||
                     (service.contains("recharge",true) && !service.contains("package",true))
                 "Package Recharge" -> service.contains("package",true) || service.contains("data",true)
                 else -> service.contains("bill",true)
             }
-            if(!serviceMatch) return@filter false
-            val ref=row.optString("reference")
-            val receipt=receiptCache[ref]
+            if(!serviceMatch)return@filter false
+            val receipt=receiptCache[row.optString("reference")] ?: return@filter false
+            val account=normalizedRecipient(receipt.optString("account"))
             val amount=normalizedMoney(row.optString("price"))
-                ?: receipt?.optString("amount")?.let { normalizedMoney(it) }
-            amount==requestedAmount && receipt?.optString("account")
-                ?.replace(" ", "")?.removePrefix("+960")==verifyRecipient
+                ?: normalizedMoney(receipt.optString("amount"))
+            account.isNotBlank() && account==normalizedRecipient(verifyRecipient) &&
+                amount!=null && (requestedAmount==null || amount==requestedAmount) &&
+                (verifyService!="Package Recharge" || verifyPackage.isBlank() ||
+                    receipt.optString("description").contains(verifyPackage,true) ||
+                    service.contains("package",true))
         }
         if(possible.size==1) {
             val row=possible.first()
             val status=row.optString("status","Unknown")
+            val ref=row.optString("reference")
+            val proof=receiptCache[ref]
             verificationAnnounced=true
-            state.text="Matching Wallet transaction found. Provider status: $status."
-            AlertDialog.Builder(this).setTitle("Faseyha transaction matched")
+            state.text="Matching recent Wallet transaction. Provider status: $status."
+            AlertDialog.Builder(this).setTitle("Faseyha transaction verification")
                 .setMessage("Service: "+row.optString("service")+
-                    "\nRecipient: "+verifyRecipient+"\nAmount: MVR "+requestedAmount+
-                    "\nWallet status: "+status+
-                    "\nReference: "+row.optString("reference")+
-                    "\n\nThis confirms the provider history entry, not independent network delivery.")
+                    "\\nRecipient: "+verifyRecipient+
+                    "\\nAmount: MVR "+row.optString("price").ifBlank{proof?.optString("amount").orEmpty()}+
+                    "\\nWallet status: "+status+
+                    "\\nReference: "+ref+
+                    "\\n\\nThis verifies Faseyha's matching recent transaction, not independently mobile delivery.")
                 .setPositiveButton("OK",null).show()
-        } else if(possible.size>1) {
+        }else if(possible.size>1){
             verificationAnnounced=true
-            state.text="Multiple matching transactions found. Open receipts and confirm the reference."
+            state.text="Multiple recent provider transactions match. Open their receipts and compare references; automatic confirmation withheld."
+        }else if(!receiptBusy && receiptQueue.isEmpty() && automaticReceiptReads>0){
+            state.text="No uniquely verified recent transaction yet. Check the latest Wallet entry and receipt before attempting another payment."
         }
     }
 
@@ -393,14 +433,14 @@ class FaseyhaWalletActivity : Activity() {
     }
 
     private fun enqueueMissingReceipts(){
-        if(receiptBusy || automaticReceiptReads>=12) return
+        if(receiptBusy || automaticReceiptReads>=receiptBatchLimit) return
         val queued=receiptQueue.map{it.first}.toSet()
         for((ref,row) in records){
             if(receiptCache.containsKey(ref) || queued.contains(ref)) continue
             val u=Uri.parse(row.optString("url"))
             if(u.scheme!="https" || !trusted(u.host) || u.path?.startsWith("/invoice/")!=true)continue
             receiptQueue.addLast(ref to u.toString())
-            if(receiptQueue.size>=12-automaticReceiptReads)break
+            if(receiptQueue.size>=receiptBatchLimit-automaticReceiptReads)break
         }
         startAutomaticReceipt()
     }
@@ -441,8 +481,12 @@ class FaseyhaWalletActivity : Activity() {
     private fun finishAutomaticReceipt(){
         if(receiptQueue.isNotEmpty())receiptQueue.removeFirst()
         receiptBusy=false
-        if(!isFinishing && automaticReceiptReads<12 && receiptQueue.isNotEmpty())
-            receiptWeb.postDelayed({startAutomaticReceipt()},350)
+        if(!isFinishing && automaticReceiptReads<receiptBatchLimit && receiptQueue.isNotEmpty())
+            receiptWeb.postDelayed({startAutomaticReceipt()},450)
+        else if(!isFinishing && wallet()) {
+            checkRequestedTransaction()
+            scan()
+        }
     }
 
     private fun loadMore(){
