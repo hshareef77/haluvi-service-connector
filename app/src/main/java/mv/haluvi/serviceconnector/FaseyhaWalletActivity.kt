@@ -412,6 +412,8 @@ class FaseyhaWalletActivity : Activity() {
         }
     }
     override fun onDestroy(){
+        receiptQueue.clear()
+        if(::receiptWeb.isInitialized){(receiptWeb.parent as? ViewGroup)?.removeView(receiptWeb);receiptWeb.destroy()}
         (web.parent as? ViewGroup)?.removeView(web);web.destroy();super.onDestroy()
     }
 }
