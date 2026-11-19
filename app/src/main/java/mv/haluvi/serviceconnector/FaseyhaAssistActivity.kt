@@ -176,7 +176,7 @@ class FaseyhaAssistActivity : Activity() {
                         pendingPreparation = false
                         web.postDelayed({ prepareWhenReady(0) }, 1200)
                     }
-                    if (isTrusted()) state.text = if (Uri.parse(url).path.isNullOrBlank() || Uri.parse(url).path == "/") "Faseyha homepage loaded. Open Dashboard and a payment form in the website below before inspecting." else "Faseyha page loaded. Open the relevant number and amount form, then inspect."
+                    if (!observingProviderResult && isTrusted()) state.text = if (Uri.parse(url).path.isNullOrBlank() || Uri.parse(url).path == "/") "Faseyha homepage loaded. Open Dashboard and a payment form in the website below before inspecting." else "Faseyha page loaded. Open the relevant number and amount form, then inspect."
                     else state.text = "This page is outside faseyha.net. The native field assistant is disabled."
                 }
             }
@@ -578,6 +578,7 @@ class FaseyhaAssistActivity : Activity() {
                 .filter(x=>clean(x.innerText||x.value||x.getAttribute('aria-label')).toLowerCase()===action.toLowerCase());
             if(matches.length!==1)return JSON.stringify({ok:false,reason:'Provider action button not unique: '+matches.length});
             window.__haluviBeforeSubmit=(document.body.innerText||"").split(/\n/).map(x=>x.trim()).filter(Boolean);
+            try{sessionStorage.setItem('haluvi_before_submit',JSON.stringify(window.__haluviBeforeSubmit));}catch(e){}
             matches[0].click();return JSON.stringify({ok:true});
         })(__PATH__,__TARGET__,__MONEY__,__OP__,__ACTION__,__SUMMARY__);"""
             .replace("__PATH__",JSONObject.quote(selectedPath()))
@@ -623,7 +624,8 @@ class FaseyhaAssistActivity : Activity() {
         }
         val js="""(function(){
             const clean=x=>(x||'').replace(/\s+/g,' ').trim();
-            const old=window.__haluviBeforeSubmit||[];
+            let old=window.__haluviBeforeSubmit||[];
+            if(!old.length){try{old=JSON.parse(sessionStorage.getItem("haluvi_before_submit")||"[]");}catch(e){}}
             const oldSet=new Set(old.map(clean));
             const notices=Array.from(document.querySelectorAll('[role="alert"],[role="status"],[aria-live],.toast,.notification,.alert,[role="dialog"]'))
                 .filter(x=>x.getClientRects().length>0 && getComputedStyle(x).visibility!=='hidden')
@@ -660,7 +662,8 @@ class FaseyhaAssistActivity : Activity() {
                     state.text="Faseyha response: $classification. Check transaction history for confirmation."
                     AlertDialog.Builder(this).setTitle("Faseyha response — $classification")
                         .setMessage("Provider displayed:\n$providerMessage\n\nThis is a website response, not independent proof of delivery. Check Wallet and receipt before retrying.")
-                        .setPositiveButton("OK",null).show()
+                        .setPositiveButton("View Wallet"){_,_->startActivity(android.content.Intent(this, FaseyhaWalletActivity::class.java))}
+                        .setNegativeButton("Close",null).show()
                 }else web.postDelayed({checkProviderResult(attempt+1)},900)
             }catch(_:Exception){
                 web.postDelayed({checkProviderResult(attempt+1)},900)
