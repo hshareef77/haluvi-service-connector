@@ -694,7 +694,7 @@ class FaseyhaAssistActivity : Activity() {
             const label=x=>clean(x.innerText||x.value||x.getAttribute('aria-label')||x.textContent);
             const enabled=x=>visible(x)&&!x.disabled&&x.getAttribute('aria-disabled')!=='true';
             const buttons=Array.from(document.querySelectorAll('button,[role="button"],input[type="submit"]')).filter(visible);
-            const positive=buttons.filter(x=>/^(confirm\\s*(?:&|and)\\s*recharge|confirm\\s+recharge|confirm\\s*(?:&|and)\\s*pay|confirm\\s+payment|confirm\\s+activation)$/i.test(label(x)));
+            const positive=buttons.filter(x=>/^(confirm\s*(?:&|and)\s*recharge|confirm\s+recharge|confirm\s*(?:&|and)\s*pay|confirm\s+payment|confirm\s+activation)$/i.test(label(x)));
             let confirmation=null;
             if(positive.length===1&&enabled(positive[0])){
               let p=positive[0].parentElement;
@@ -704,7 +704,7 @@ class FaseyhaAssistActivity : Activity() {
                 const siblings=Array.from(p.querySelectorAll('button,[role="button"],input[type="submit"]')).filter(visible);
                 if(siblings.some(x=>/^(cancel|back|close|no)$/i.test(label(x)))
                    &&siblings.filter(x=>x===positive[0]).length===1
-                   &&/confirm\\s+(?:recharge|payment|bill|activation)/i.test(body)){
+                   &&/confirm\s+(?:recharge|payment|bill|activation)/i.test(body)){
                   confirmation={summary:body,positive:label(positive[0])};break;
                 }
               }
@@ -767,7 +767,7 @@ class FaseyhaAssistActivity : Activity() {
         if(!isTrusted() || Uri.parse(web.url ?: "").path!=selectedPath()) {
             message("Provider page changed. Check Wallet before retrying.");return
         }
-        val normalized=providerText.replace(Regex("\\s+")," ")
+        val normalized=providerText.replace(Regex("\s+")," ")
         val recipientDigits=normalized.replace(Regex("[^0-9]"),"")
         if(!recipientDigits.contains(target.filter(Char::isDigit))) {
             message("Faseyha confirmation does not show the expected recipient. No final payment made.");return
@@ -778,7 +778,7 @@ class FaseyhaAssistActivity : Activity() {
         }
         // The provider's Recharge amount excludes GST. Compare the total amount
         // charged, not the displayed pre-tax amount, against the user's input.
-        val totalMatch=Regex("total\\s+to\\s+pay\\s*(?:MVR|Rf|ރ)?\\s*([0-9,]+(?:\\.[0-9]{1,2})?)",RegexOption.IGNORE_CASE).find(normalized)
+        val totalMatch=Regex("total\s+to\s+pay\s*(?:MVR|Rf|ރ)?\s*([0-9,]+(?:\.[0-9]{1,2})?)",RegexOption.IGNORE_CASE).find(normalized)
         val total=totalMatch?.groupValues?.get(1)?.replace(",","")?.toBigDecimalOrNull()
         if(money!=null && (total==null || total.compareTo(money.toBigDecimalOrNull() ?: java.math.BigDecimal("-1"))!=0)) {
             message("Provider confirmation total does not match the requested amount. No payment was completed.");return
