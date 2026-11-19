@@ -93,7 +93,7 @@ class FaseyhaAssistActivity : Activity() {
 
         primary.addView(Button(this).apply { text = "Read provider order summary"; minHeight = 56.dp; setOnClickListener { readOrderSummary() } })
         primary.addView(Button(this).apply { text = "Faseyha Wallet and Transactions"; minHeight = 56.dp; setOnClickListener {
-            startActivity(android.content.Intent(this, FaseyhaWalletActivity::class.java))
+            startActivity(android.content.Intent(this@FaseyhaAssistActivity, FaseyhaWalletActivity::class.java))
         } })
         primary.addView(Button(this).apply { text = "Inspect current transaction result"; minHeight = 56.dp; setOnClickListener { inspectResult() } })
         primary.addView(Button(this).apply { text = "Browse packages by category"; minHeight = 56.dp; setOnClickListener { inspectPackageSummary() } })
