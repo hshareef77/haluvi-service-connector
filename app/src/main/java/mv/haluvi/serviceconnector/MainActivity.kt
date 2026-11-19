@@ -165,6 +165,9 @@ class MainActivity : Activity() {
             info("Android does not provide access to this app's private login tokens. Payment or recharge actions require support from the provider and your confirmation.")
         } else {
             if (name.contains("faseyha", ignoreCase = true) || android.net.Uri.parse(value).host?.lowercase()?.let { it == "faseyha.net" || it.endsWith(".faseyha.net") } == true) {
+                button("Faseyha Wallet and Transactions") {
+                    startActivity(Intent(this, FaseyhaWalletActivity::class.java))
+                }
                 button("Faseyha assisted recharge and bill form") {
                     val uri = android.net.Uri.parse(value)
                     val host = uri.host?.lowercase()
@@ -256,7 +259,7 @@ class MainActivity : Activity() {
     private fun about() {
         ui("About Haluvi Service Connector")
         button("Back") { home() }
-        info("Version 1.0. Native Kotlin Android application. Offline service profile manager, launcher and HTTPS WebView with persistent permitted cookies, plus opt-in accessibility inspection.")
+        info("Version 2.0. Native Kotlin Android application. Offline service profile manager, launcher and HTTPS WebView with persistent permitted cookies, plus opt-in accessibility inspection.")
         info("Generic third-party wallet payments cannot be made invisibly simply by installing an app. Provider-approved API, SDK, or deep-link integrations are required for reliable in-app transactions. No payment API is included in this release.")
     }
     private fun showMessage(s: String) { AlertDialog.Builder(this).setMessage(s).setPositiveButton("OK", null).show() }

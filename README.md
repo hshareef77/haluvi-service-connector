@@ -1,5 +1,14 @@
 # Haluvi Service Connector
 
+## v2.0 accessible consolidated test release
+- Accessible native **Service** and **Operator** selection buttons display the currently selected values and open radio-choice dialogs that identify the selected choice to TalkBack/Jieshuo+. No unexplained unlabeled dropdowns.
+- Choosing a service opens its saved-session page; choosing an operator attempts safe one-match application automatically when the correct Faseyha page is loaded. An advanced manual retry control remains.
+- Native **Faseyha Wallet and Transactions** opens the known `/wallet` URL. The Recharge category is selected by default. Payments is a separate wallet-deposit filter.
+- Live read-only transaction list, capped retrieval, Load More, separate wholesale classification, and provider receipt links are available as best-effort DOM inspection. Third-party website changes may prevent some fields from being recognized. Treat provider "Successful" as a provider record, not guaranteed recipient delivery.
+- **GitHub Release publication** is explicitly marked Latest and verified against the release API and attached APK asset, so Developer Hub's release list can find the same tag. The previous unrelated release sorting issue may still require fixing Developer Hub's list sorting.
+- Transactions are *never* sent automatically. Checkout, package activation and final authorization remain manual. No private wallet API integration or unattended HaluviPay fallback exists.
+- Retains persistent browser session, existing package categories, package selection and order-summary reading, local preparation records and permanent signing key identity.
+
 ## v1.9 package groups and payment-result investigation
 - Package browser reads up to 160 visible candidate cards rather than truncating the list at 30. The number shown in Faseyha's "N packages" heading is reported separately; only currently rendered cards can be inspected.
 - A category option reads provider-defined filters such as All, Special Offer, Mini Data Plans, Weekly, Monthly, and Data when exposed. A chosen category is applied only if exactly one matching filter control exists, then the package list can be refreshed.
