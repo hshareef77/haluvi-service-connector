@@ -228,7 +228,7 @@ class FaseyhaWalletActivity : Activity() {
             list.removeAllViews()
             if(category=="Recharges") enqueueMissingReceipts()
             if(records.isEmpty())list.addView(TextView(this).apply{
-                text="No transactions recognized. Select the category on Faseyha's website and try again."
+                text="No transactions found. Refresh or check the Faseyha website."
             })
             records.values.forEach{row->
                 val service=row.optString("service","Unknown service")
@@ -258,12 +258,12 @@ class FaseyhaWalletActivity : Activity() {
         val ref=row.optString("reference")
         val extra=receiptCache[ref]
         val u=Uri.parse(row.optString("url"))
-        val account=extra?.optString("account").orEmpty().ifBlank{"Not available in Wallet history; open receipt"}
+        val account=extra?.optString("account").orEmpty().ifBlank{"Not available yet; open receipt"}
         val receiptAmount=extra?.optString("amount").orEmpty()
         val price=row.optString("price").ifBlank{receiptAmount.ifBlank{"Not identified"}}
         val receiptStatus=extra?.optString("status").orEmpty().ifBlank{"Not inspected"}
         val detailText="Service: "+row.optString("service")+
-            "\nAccount or recipient: "+account+
+            "\nRecipient: "+account+
             "\nAmount: MVR "+price+
             "\nDate: "+row.optString("date")+
             "\nWallet status: "+row.optString("status")+
@@ -309,7 +309,7 @@ class FaseyhaWalletActivity : Activity() {
                 state.text="Receipt details retrieved for the selected transaction. Return to Wallet to view updated details."
                 AlertDialog.Builder(this).setTitle("Provider receipt details")
                     .setMessage("Reference: "+ref+
-                        "\nAccount or recipient: "+parsed.optString("account").ifBlank{"Not identified"}+
+                        "\nRecipient: "+parsed.optString("account").ifBlank{"Not identified"}+
                         "\nAmount: MVR "+parsed.optString("amount").ifBlank{"Not identified"}+
                         "\nReceipt status: "+parsed.optString("status")+
                         "\n\nPaid in Full confirms payment to provider, not independently mobile recharge delivery.")
@@ -379,7 +379,7 @@ class FaseyhaWalletActivity : Activity() {
                 receiptCache[selected.first]=obj
                 saveVerifiedReceipts()
                 if(!isFinishing) {
-                    state.text="Verified receipt details retrieved."
+                    state.text="Receipt details updated."
                     if(wallet()) scan()
                 }
             }
