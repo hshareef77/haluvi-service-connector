@@ -753,10 +753,15 @@ class FaseyhaAssistActivity : Activity() {
                     providerResultNoticeShown=true
                     val providerMessage=result.optString("message").take(350)
                     state.text="Faseyha response: $classification. Verify the provider transaction in Wallet."
-                    AlertDialog.Builder(this).setTitle("Faseyha response — $classification")
-                        .setMessage("Provider displayed:\n$providerMessage\n\nThis is a website response, not independent proof of delivery. Check Wallet and receipt before retrying.")
-                        .setPositiveButton("Verify in Wallet"){_,_->openWalletVerification()}
-                        .setNegativeButton("Close",null).show()
+                    if(classification=="Provider reported success") {
+                        state.text="Faseyha reports success. Checking Wallet and matching receipt without resubmitting."
+                        web.postDelayed({if(!isFinishing)openWalletVerification()},800)
+                    }else {
+                        AlertDialog.Builder(this).setTitle("Faseyha response — $classification")
+                            .setMessage("Provider displayed:\n$providerMessage\n\nCheck Wallet and receipt before retrying. A website response alone is not proof of delivery.")
+                            .setPositiveButton("Verify in Wallet"){_,_->openWalletVerification()}
+                            .setNegativeButton("Close",null).show()
+                    }
                 }else web.postDelayed({checkProviderResult(attempt+1)},900)
             }catch(_:Exception){
                 web.postDelayed({checkProviderResult(attempt+1)},900)
