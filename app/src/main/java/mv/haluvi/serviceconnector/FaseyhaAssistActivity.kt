@@ -497,6 +497,98 @@ class FaseyhaAssistActivity : Activity() {
         }
     }
 
+
+    private fun reviewFinalAction(target:String,money:String) {
+        if(!isTrusted() || Uri.parse(web.url ?: "").path!=selectedPath()) {
+            message("Provider page changed. Review cancelled.");return
+        }
+        val js="""(function(){
+            const t=document.body.innerText||'',i=t.toLowerCase().lastIndexOf('order summary');
+            return JSON.stringify({summary:i>=0?t.slice(i,i+900).replace(/\s+/g,' ').trim():''});
+        })();"""
+        web.evaluateJavascript(js){raw->
+            try{
+                val summary=JSONObject(org.json.JSONArray("[$raw]").getString(0)).optString("summary")
+                val op=if(serviceIndex==2)billOperators[billOperatorIndex] else operators[operatorIndex]
+                val action=if(serviceIndex==0)"Recharge" else "Pay"
+                val details="Service: "+services[serviceIndex]+"\nOperator: "+op+
+                    "\nRecipient/account: "+target+"\nAmount: MVR "+money+
+                    (if(summary.isNotBlank())"\n\nProvider summary:\n"+summary else "\n\nProvider summary not available; form values will be checked before submission.")+
+                    "\n\nNo payment has been submitted."
+                AlertDialog.Builder(this).setTitle("Review "+action+" — not submitted")
+                    .setMessage(details)
+                    .setPositiveButton(action){_,_->confirmFinalSubmission(target,money,summary)}
+                    .setNegativeButton("Review website",null).show()
+            }catch(_:Exception){message("Provider summary cannot be read. No payment submitted.")}
+        }
+    }
+
+    private fun confirmFinalSubmission(target:String,money:String?,reviewedSummary:String) {
+        if(submissionAttempted){message("A provider action was already attempted. Check history before retrying.");return}
+        val op=if(serviceIndex==2)billOperators[billOperatorIndex] else operators[operatorIndex]
+        val action=when(serviceIndex){0->"Recharge";1->"Activate package";else->"Pay"}
+        val detail="This will press Faseyha's actual "+action+" button and may spend wallet funds immediately.\n\nService: "+
+            services[serviceIndex]+"\nOperator: "+op+"\nRecipient/account: "+target+
+            (if(serviceIndex==1)"\nPackage: "+selectedPackageLabel.orEmpty() else "\nAmount: MVR "+money.orEmpty())+
+            "\n\nVerify provider total. Never retry an uncertain payment without checking its history."
+        AlertDialog.Builder(this).setTitle("Final confirmation — "+action)
+            .setMessage(detail).setNegativeButton("Cancel",null)
+            .setPositiveButton("Confirm "+action){_,_->submitOnce(target,money,reviewedSummary)}.show()
+    }
+
+    private fun submitOnce(target:String,money:String?,reviewedSummary:String) {
+        if(submissionAttempted || !isTrusted() || Uri.parse(web.url?:"").path!=selectedPath()
+            || number.text.toString().trim()!=target
+            || (money!=null && amount.text.toString().trim().toBigDecimalOrNull()!=money.toBigDecimalOrNull())) {
+            message("Provider page or request values changed. No submission.");return
+        }
+        val op=if(serviceIndex==2)billOperators[billOperatorIndex] else operators[operatorIndex]
+        val action=when(serviceIndex){0->"Recharge";1->"Activate package";else->"Pay"}
+        val js="""(function(path,recipient,money,operatorName,action,priorSummary){
+            if(location.protocol!=='https:'||location.hostname!=='faseyha.net'||location.pathname!==path)
+                return JSON.stringify({ok:false,reason:'Provider URL changed'});
+            const clean=t=>(t||'').replace(/\s+/g,' ').trim();
+            const text=document.body.innerText||'',i=text.toLowerCase().lastIndexOf('order summary');
+            const summary=i<0?'':clean(text.slice(i,i+900));
+            if(priorSummary && priorSummary!==summary) return JSON.stringify({ok:false,reason:'Order summary changed'});
+            if(!new RegExp('(^|\\D)'+recipient+'(\\D|$)').test(summary||text))
+                return JSON.stringify({ok:false,reason:'Recipient not confirmed'});
+            if(!(summary||text).toLowerCase().includes(operatorName.toLowerCase()))
+                return JSON.stringify({ok:false,reason:'Operator not verified'});
+            if(action==='Activate package'){
+                if(!summary||!/\bpackage\b/i.test(summary)||!/\btotal\b/i.test(summary))
+                    return JSON.stringify({ok:false,reason:'Provider package summary missing'});
+            } else {
+                const fields=Array.from(document.querySelectorAll('input')).filter(x=>x.getClientRects().length>0&&!x.disabled);
+                if(!fields.some(x=>clean(x.value)===recipient)||!fields.some(x=>Number(x.value)===Number(money)))
+                    return JSON.stringify({ok:false,reason:'Provider inputs no longer match'});
+                if(action==='Recharge' && (!summary||!/\btotal\b/i.test(summary)))
+                    return JSON.stringify({ok:false,reason:'Recharge summary missing'});
+            }
+            const matches=Array.from(document.querySelectorAll('button,input[type="submit"]'))
+                .filter(x=>x.getClientRects().length>0&&!x.disabled)
+                .filter(x=>clean(x.innerText||x.value||x.getAttribute('aria-label')).toLowerCase()===action.toLowerCase());
+            if(matches.length!==1)return JSON.stringify({ok:false,reason:'Provider action button not unique: '+matches.length});
+            matches[0].click();return JSON.stringify({ok:true});
+        })(__PATH__,__TARGET__,__MONEY__,__OP__,__ACTION__,__SUMMARY__);"""
+            .replace("__PATH__",JSONObject.quote(selectedPath()))
+            .replace("__TARGET__",JSONObject.quote(target))
+            .replace("__MONEY__",JSONObject.quote(money ?: ""))
+            .replace("__OP__",JSONObject.quote(op))
+            .replace("__ACTION__",JSONObject.quote(action))
+            .replace("__SUMMARY__",JSONObject.quote(reviewedSummary))
+        submissionAttempted=true
+        web.evaluateJavascript(js){raw->
+            try{
+                val obj=JSONObject(org.json.JSONArray("[$raw]").getString(0))
+                state.text=if(obj.optBoolean("ok"))
+                    "Faseyha "+action+" pressed once. Transaction status unknown. Check Wallet and receipt before any retry."
+                else "Submission blocked: "+obj.optString("reason")
+                message(state.text.toString())
+            }catch(_:Exception){message("Submission result uncertain. Check Wallet; do not retry automatically.")}
+        }
+    }
+
     private fun applyOperator(showDialog: Boolean = true) {
         if (!isTrusted() || Uri.parse(web.url ?: "").path != selectedPath()) {
             message("Open the selected Faseyha service page before choosing an operator.")
