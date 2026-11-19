@@ -24,6 +24,8 @@ class FaseyhaWalletActivity : Activity() {
     private var category="Recharges"
     private var limit=50
     private var busy=false
+    private var autoLoads=0
+    private var previousAutoCount=-1
     private var receiptReference: String? = null
     private var receiptReturnToWallet = false
     private val receiptCache = mutableMapOf<String,JSONObject>()
@@ -42,7 +44,7 @@ class FaseyhaWalletActivity : Activity() {
         fun add(label:String,fn:()->Unit)=root.addView(Button(this).apply{text=label;minHeight=buttonHeight;setOnClickListener{fn()}})
         selector=Button(this).apply{text="Category: Recharges. Change";minHeight=buttonHeight;setOnClickListener{chooseCategory()}}
         root.addView(selector)
-        add("Refresh transactions"){records.clear();list.removeAllViews();web.loadUrl("https://faseyha.net/wallet")}
+        add("Refresh transactions"){autoLoads=0;previousAutoCount=-1;records.clear();list.removeAllViews();web.loadUrl("https://faseyha.net/wallet")}
         add("Load older transactions"){loadMore()}
         add("Close Wallet"){finish()}
         advanced=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL;visibility=View.GONE}
@@ -100,7 +102,7 @@ class FaseyhaWalletActivity : Activity() {
                 category=options[i]
                 selector.text="Category: "+category+". Change"
                 selector.contentDescription="Wallet category selected: "+category+". Double tap to change"
-                records.clear();list.removeAllViews()
+                autoLoads=0;previousAutoCount=-1;records.clear();list.removeAllViews()
                 if(wallet())selectCategory{scan()} else web.loadUrl("https://faseyha.net/wallet")
             }.setNegativeButton("Cancel",null).show()
     }
@@ -210,7 +212,7 @@ class FaseyhaWalletActivity : Activity() {
                     else if(wholesale)"Wholesale "
                     else ""
                 val date=row.optString("date","Date not identified")
-                val price=row.optString("price").ifBlank{"amount unavailable"}
+                val price=row.optString("price").ifBlank{receiptCache[row.optString("reference")]?.optString("amount")?.takeIf{it.isNotBlank()} ?: "amount unavailable"}
                 val status=row.optString("status","Not shown")
                 val details=receiptCache[row.optString("reference")]
                 val account=details?.optString("account")?.takeIf{it.isNotBlank()} ?: ""
@@ -221,6 +223,11 @@ class FaseyhaWalletActivity : Activity() {
                     contentDescription="$summary View details and transaction reference."
                     setOnClickListener{detail(row,kind)}
                 })
+            }
+            if(obj.optBoolean("more") && records.size<limit && autoLoads<6 && records.size>previousAutoCount) {
+                previousAutoCount=records.size
+                autoLoads++
+                web.postDelayed({ if(wallet() && !busy && records.size<limit) loadMore() },700)
             }
         }
     }
@@ -250,7 +257,8 @@ class FaseyhaWalletActivity : Activity() {
           const total=text.match(/(?:total amount|amount paid)\s*(?:MVR|Rf|ރ|ރ\.)?\s*([\d,]+(?:\.\d{1,2})?)/i);
           const service=(text.match(/description\s+([\s\S]{0,120}?)(?:total amount|amount paid)/i)||[])[1]||'';
           const billTo=(text.match(/bill to\s+([A-Z0-9-]{5,32})/i)||[])[1]||'';
-          const account=(service.match(/\b(?:BB)?[A-Z0-9-]{7,30}\b/i)||[])[0]||billTo;
+          const candidates=(service.match(/\b[A-Z0-9-]{7,30}\b/gi)||[]).filter(x=>/\d/.test(x));
+          const account=candidates.find(x=>/^BB/i.test(x))||candidates[candidates.length-1]||billTo;
           return JSON.stringify({reference:receipt,account:account,amount:total?total[1]:'',status:paid});
         })();"""
         web.evaluateJavascript(js){raw->
