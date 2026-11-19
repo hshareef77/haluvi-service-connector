@@ -189,7 +189,7 @@ class FaseyhaAssistActivity : Activity() {
         operator.text = "Operator: " + currentOperator + ". Select to change"
         operator.contentDescription = "Operator, selected " + currentOperator + ". Double tap to change."
         operator.visibility = View.VISIBLE
-        if (::packageCategory.isInitialized) packageCategory.visibility = if (serviceIndex == 1) View.VISIBLE else View.GONE
+        if (::packageCategory.isInitialized) packageCategory.visibility = if (serviceIndex == 1 && operatorIndex == 1) View.VISIBLE else View.GONE
         if (::packageChoice.isInitialized) packageChoice.visibility = if (serviceIndex == 1) View.VISIBLE else View.GONE
         if (::amount.isInitialized) {
             amount.visibility = if (serviceIndex == 1) View.GONE else View.VISIBLE
@@ -234,7 +234,7 @@ class FaseyhaAssistActivity : Activity() {
     }
 
     private fun chooseNativePackageCategory() {
-        if (serviceIndex != 1) return
+        if (serviceIndex != 1 || operatorIndex != 1) return
         if (!isTrusted() || Uri.parse(web.url ?: "").path != "/packages") {
             openFaseyhaPath("/packages")
             state.text = "Package page opening. Choose a category again after the website loads."
@@ -356,10 +356,8 @@ class FaseyhaAssistActivity : Activity() {
                 message("Choose a package first. The package selector is directly above the mobile number.")
                 return
             }
-            AlertDialog.Builder(this).setTitle("Prepare package recipient")
-                .setMessage("Recipient: $target\n\nIn the Faseyha website, choose Ooredoo or Dhiraagu and explicitly select a package. The provider controls the package price, GST and total. This assistant fills only the recipient number, not the amount, and never activates a package.")
-                .setNegativeButton("Cancel", null)
-                .setPositiveButton("Fill recipient only") { _, _ -> fillPackageRecipient(target) }.show()
+            // Selected provider package is retained. Continue fills the recipient only.
+            fillPackageRecipient(target)
             return
         }
         val parsed = money.toBigDecimalOrNull()
@@ -390,9 +388,49 @@ class FaseyhaAssistActivity : Activity() {
         web.evaluateJavascript(js) { raw ->
             try {
                 val result = JSONObject(org.json.JSONArray("[$raw]").getString(0))
-                message(if (result.optBoolean("ok")) "Recipient matches the native number. Select operator and package on the Faseyha website and review the final total, including GST, before activating manually. No package purchase was submitted or verified."
-                else "Package recipient not filled: " + result.optString("reason"))
+                if (result.optBoolean("ok")) {
+                    state.text = "Recipient prepared. Reading Faseyha order summary."
+                    web.postDelayed({ reviewPreparedPackage(target) }, 400)
+                } else message("Package recipient not filled: " + result.optString("reason"))
             } catch (_: Exception) { message("Could not verify the package recipient. No payment was submitted.") }
+        }
+    }
+
+    private fun reviewPreparedPackage(target: String) {
+        if (!isTrusted() || Uri.parse(web.url ?: "").path != "/packages") {
+            message("The provider page changed. Package review stopped. No payment was submitted.")
+            return
+        }
+        val chosen = selectedPackageLabel ?: run {
+            message("Selected package was lost. Choose a package again.")
+            return
+        }
+        val js = """(function(number){
+           const t=(document.body.innerText||'');
+           const i=t.toLowerCase().lastIndexOf('order summary');
+           if(i<0) return JSON.stringify({ok:false,reason:'Order summary unavailable'});
+           const summary=t.slice(i,i+950).replace(/\s+/g,' ').trim();
+           const numberMatched=new RegExp('(^|\\D)'+number+'(\\D|$)').test(summary);
+           const hasTotal=/total\s+to\s+pay|total\s*:?\s*(?:MVR|Rf|ރ)/i.test(summary);
+           const hasPackage=/\bpackage\b/i.test(summary);
+           return JSON.stringify({ok:numberMatched&&hasTotal&&hasPackage,recipientMatched:numberMatched,summary:summary});
+        })(__NUMBER__);""".replace("__NUMBER__",JSONObject.quote(target))
+        web.evaluateJavascript(js) { raw ->
+            try {
+                val result=JSONObject(org.json.JSONArray("[$raw]").getString(0))
+                if (!result.optBoolean("ok")) {
+                    state.text="Provider package or recipient could not be verified in order summary. Review Faseyha below. Nothing was paid."
+                    message(state.text.toString())
+                    return@evaluateJavascript
+                }
+                val summary=result.optString("summary")
+                val shortName=chosen.substringBefore(" SPECIAL OFFER",chosen).take(55)
+                state.text="Package recipient matches. Review provider details before payment."
+                AlertDialog.Builder(this).setTitle("Review Faseyha package — no payment submitted")
+                    .setMessage("Operator: ${operators[operatorIndex]}\nRecipient: $target\nSelected package: $shortName\n\nActual provider order summary:\n$summary\n\nConfirm product, taxes and total on the website before authorizing any payment. This assistant will not activate the package.")
+                    .setPositiveButton("Review website",null)
+                    .show()
+            } catch (_:Exception) { message("Could not read the provider order summary. No payment was submitted.") }
         }
     }
 
@@ -599,7 +637,9 @@ class FaseyhaAssistActivity : Activity() {
                             selectedPackageLabel=label.take(90)
                             val prices=Regex("""([\d,]+(?:\.\d{1,2})?)\s*incl\.?\s*GST""", RegexOption.IGNORE_CASE).findAll(label).toList()
                             selectedPackagePrice=prices.lastOrNull()?.groupValues?.get(1)
-                            packageChoice.text = "Package selected: " + label.take(80) + ". Choose to change"
+                            val shortName=label.substringBefore(" SPECIAL OFFER",label).take(50)
+                            val price=selectedPackagePrice
+                            packageChoice.text = "Package: " + shortName + (if (price.isNullOrBlank()) "" else ", MVR " + price) + ". Change"
                             packageChoice.contentDescription = packageChoice.text
                             state.text = "Package applied to provider. Review the actual Faseyha summary before paying."
                         } catch (_:Exception) {message("Unable to verify provider package selection.") }
