@@ -99,9 +99,11 @@ class FaseyhaAssistActivity : Activity() {
         primary.addView(Button(this).apply { text = "Prepare selected service form — do not pay"; minHeight = 56.dp; setOnClickListener { prepareSelectedService() } })
         primary.addView(Button(this).apply { text = "Apply operator on website — no payment"; minHeight = 56.dp; setOnClickListener { applyOperator() } })
         primary.addView(Button(this).apply { text = "Read provider order summary"; minHeight = 56.dp; setOnClickListener { readOrderSummary() } })
-        primary.addView(Button(this).apply { text = "Browse packages and select product card"; minHeight = 56.dp; setOnClickListener { inspectPackageSummary() } })
+        primary.addView(Button(this).apply { text = "Find Faseyha transaction history"; minHeight = 56.dp; setOnClickListener { findHistory() } })
+        primary.addView(Button(this).apply { text = "Inspect current transaction result"; minHeight = 56.dp; setOnClickListener { inspectResult() } })
+        primary.addView(Button(this).apply { text = "Browse packages by category"; minHeight = 56.dp; setOnClickListener { inspectPackageSummary() } })
         primary.addView(Button(this).apply { text = "Transaction records and review"; minHeight = 56.dp; setOnClickListener { showRecords() } })
-        primary.addView(Button(this).apply { text = "Payment test and confirmation guidance"; minHeight = 56.dp; setOnClickListener { showTestGuide() } })
+
         primary.addView(Button(this).apply { text = "More browser and inspection controls"; minHeight = 56.dp; setOnClickListener {
             actions.visibility = if (actions.visibility == View.GONE) View.VISIBLE else View.GONE
             text = if (actions.visibility == View.VISIBLE) "Hide extra browser controls" else "More browser and inspection controls"
@@ -115,6 +117,7 @@ class FaseyhaAssistActivity : Activity() {
             openFaseyhaPath(path)
         }
         action("Open dashboard") { openFaseyhaPath("/dashboard") }
+        action("Payment test instructions") { showTestGuide() }
         action("Inspect current website form") { inspect() }
         action("Inspect service choices and controls") { inspectChoices() }
                 action("Fill current page form — do not pay") { prepare() }
@@ -366,35 +369,73 @@ class FaseyhaAssistActivity : Activity() {
 
     private fun inspectPackageSummary() {
         if (!isTrusted() || Uri.parse(web.url ?: "").path != "/packages") {
-            message("Open Package Recharge to browse packages.")
+            message("Open Package Recharge before browsing packages.")
             return
         }
         val js = """(function(){
-          const shown=x=>x.getClientRects().length>0 && getComputedStyle(x).visibility!=='hidden';
-          const tidy=x=>(x||'').replace(/\s+/g,' ').trim();
-          const nodes=Array.from(document.querySelectorAll('button,[role="option"],[role="radio"],[role="button"],label,article,[class*="package"],[class*="Package"]'));
-          const found=nodes.filter(shown).map(x=>tidy(x.innerText||x.getAttribute('aria-label')||''))
-            .filter(s=>s.length>=8 && s.length<=200 && /\b(gb|mb|data|minutes|days|package)\b/i.test(s))
-            .filter(s=>!/(activate package|purchase now|confirm payment|pay now|checkout)/i.test(s))
-            .filter((v,i,a)=>a.indexOf(v)===i).slice(0,30);
-          return JSON.stringify({items:found});
+           const shown=x=>x.getClientRects().length>0 && getComputedStyle(x).visibility!=='hidden';
+           const tidy=x=>(x||'').replace(/\s+/g,' ').trim();
+           const candidates=Array.from(document.querySelectorAll('button,[role="option"],[role="radio"],[role="button"],label,article,[class*="package"],[class*="Package"]'));
+           const items=candidates.filter(shown).map(x=>tidy(x.innerText||x.getAttribute('aria-label')||''))
+             .filter(s=>s.length>=8 && s.length<=220 && /\b(gb|mb|data|minutes|days|package)\b/i.test(s))
+             .filter(s=>!/(activate package|purchase now|confirm payment|pay now|checkout)/i.test(s))
+             .filter((v,i,arr)=>arr.indexOf(v)===i).slice(0,160);
+           const groups=Array.from(document.querySelectorAll('button,[role="tab"],[role="button"]'))
+             .filter(shown).filter(x=>!x.disabled)
+             .map(x=>tidy(x.innerText||x.getAttribute('aria-label')||''))
+             .filter(s=>/^(all|special offer|mini data plans|weekly|monthly|data|call only|salhi|[0-9]+ ?gb)$/i.test(s))
+             .filter((v,i,arr)=>arr.indexOf(v)===i).slice(0,30);
+           const match=(document.body.innerText||'').match(/(\d{1,3})\s+packages/i);
+           return JSON.stringify({items:items,groups:groups,count:match?Number(match[1]):0});
         })();"""
         web.evaluateJavascript(js) { raw ->
             try {
-                val obj = JSONObject(org.json.JSONArray("[$raw]").getString(0))
-                val arr = obj.getJSONArray("items")
-                if (arr.length() == 0) {
-                    message("No unambiguous readable package cards found. Choose a package on Faseyha's website and review its summary.")
-                    return@evaluateJavascript
-                }
-                val choices = Array(arr.length()) { i -> arr.getString(i) }
-                AlertDialog.Builder(this).setTitle("Packages visible on Faseyha")
-                    .setItems(choices) { _, i -> selectPackageCard(choices[i]) }
-                    .setNegativeButton("Cancel", null).show()
-            } catch (_: Exception) {
-                message("Could not read package choices. Use the Faseyha website selector.")
-            }
+                val obj=JSONObject(org.json.JSONArray("[$raw]").getString(0))
+                val arr=obj.getJSONArray("items")
+                val groups=obj.getJSONArray("groups")
+                val count=obj.optInt("count",0)
+                val labels=mutableListOf<String>()
+                if(groups.length()>0)labels.add("Choose package category")
+                for(i in 0 until arr.length())labels.add(arr.getString(i))
+                val explanation="Provider reports " + (if(count>0) count.toString() else "an unknown number of") +
+                    " packages. Found " + arr.length() + " visible candidate cards. " +
+                    "List may differ with filtering and page scrolling; it is not a complete price catalogue."
+                AlertDialog.Builder(this).setTitle("Browse Faseyha packages")
+                    .setMessage(explanation)
+                    .setItems(labels.toTypedArray()){_,index->
+                        if(groups.length()>0 && index==0){
+                            val choices=Array(groups.length()){i->groups.getString(i)}
+                            choosePackageGroup(choices)
+                        }else selectPackageCard(labels[index])
+                    }
+                    .setNegativeButton("Close",null).show()
+            }catch (_:Exception){ message("Could not inspect package cards. Use the provider website list.") }
         }
+    }
+
+    private fun choosePackageGroup(groups:Array<String>) {
+        AlertDialog.Builder(this).setTitle("Faseyha package category")
+            .setItems(groups){_,index->
+                if(!isTrusted() || Uri.parse(web.url ?: "").path!="/packages"){
+                    message("Open the Faseyha Packages page first.")
+                    return@setItems
+                }
+                val js="""(function(wanted){
+                   const tidy=x=>(x||'').replace(/\s+/g,' ').trim().toLowerCase();
+                   const shown=x=>x.getClientRects().length>0 && getComputedStyle(x).visibility!=='hidden';
+                   const nodes=Array.from(document.querySelectorAll('button,[role="tab"],[role="button"]')).filter(shown).filter(x=>!x.disabled);
+                   const match=nodes.filter(x=>tidy(x.innerText||x.getAttribute('aria-label'))===tidy(wanted));
+                   if(match.length!==1) return JSON.stringify({reason:'Category not unique; select on the website.'});
+                   match[0].click();
+                   return JSON.stringify({reason:'Category selected. Browse packages again to refresh.'});
+                })(__GROUP__);""".replace("__GROUP__",JSONObject.quote(groups[index]))
+                web.evaluateJavascript(js){raw->
+                    try {
+                        val result=JSONObject(org.json.JSONArray("[$raw]").getString(0))
+                        message(result.optString("reason") + "\nCategory filtering never activates or buys a package.")
+                    }catch (_:Exception){message("Could not confirm category selection.")}
+                }
+            }.setNegativeButton("Cancel",null).show()
     }
 
     private fun selectPackageCard(label: String) {
