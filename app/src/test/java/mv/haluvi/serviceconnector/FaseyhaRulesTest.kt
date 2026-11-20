@@ -118,4 +118,13 @@ class FaseyhaRulesTest {
         assertFalse(FaseyhaRules.balanceDropped(BigDecimal("10.80"), BigDecimal("10.80"), BigDecimal("10.00")))
         assertFalse(FaseyhaRules.balanceDropped(null, BigDecimal("0.80"), BigDecimal("10.00")))
     }
+
+    @Test fun faseyhaRechargeConfirmationWithoutCurrencyMarkers() {
+        val dialog = "Confirm recharge Please review the details before sending. Operator Ooredoo Raastas Number +960 7651448 " +
+            "Recharge amount 11.11 GST (8%) 0.89 Total to pay 12.00 Cancel Confirm & recharge"
+        assertTrue(FaseyhaRules.confirmationMatches(dialog, "7651448", "Ooredoo", BigDecimal("12")))
+        assertFalse(FaseyhaRules.confirmationMatches(dialog, "7651448", "Ooredoo", BigDecimal("11.11")))
+        // The button bar alone is never enough.
+        assertFalse(FaseyhaRules.confirmationMatches("Cancel Confirm & recharge", "7651448", "Ooredoo", BigDecimal("12")))
+    }
 }

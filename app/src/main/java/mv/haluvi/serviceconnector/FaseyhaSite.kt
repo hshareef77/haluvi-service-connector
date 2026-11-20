@@ -107,8 +107,18 @@ const snapshot=()=>{const lines=body().split(/\n/).map(x=>x.trim()).filter(Boole
 const previous=()=>{let old=window.__haluviBeforeSubmit||[];
   if(!old.length){try{old=JSON.parse(sessionStorage.getItem('haluvi_before_submit')||'[]');}catch(e){}}
   return new Set(old.map(tidy));};
+const ownText=p=>{let t=' '+tidy(p.innerText||'')+' ';for(const b of buttons().filter(x=>p.contains(x))){const l=label(b);if(l)t=t.split(l).join(' ');}return tidy(t);};
+const dialogOf=(button,number)=>{let first=null;
+  for(let p=button.parentElement,d=0;p&&d<10;d++,p=p.parentElement){
+    const s=tidy(p.innerText||'');if(s.length>1500)break;
+    if(!buttons().some(x=>p.contains(x)&&/^(cancel|back|close|no)$/i.test(label(x))))continue;
+    if(!first)first=p;
+    const own=ownText(p);
+    if(/confirm|are you sure|review/i.test(own)&&hasRecipient(own,number))return {node:p,text:s,complete:true};
+  }
+  return first?{node:first,text:tidy(first.innerText||''),complete:false}:null;};
 const signedOut=()=>/\/(login|signin|sign-in|register|auth)(\/|$)/i.test(location.pathname)||!!document.querySelector('input[type="password"]');
-return {tidy,low,trusted,visible,enabled,label,labels,fieldLabel,all,buttons,inputs,body,summary,isActive,setValue,OPS,opOf,opLabel,
+return {ownText,dialogOf,tidy,low,trusted,visible,enabled,label,labels,fieldLabel,all,buttons,inputs,body,summary,isActive,setValue,OPS,opOf,opLabel,
   opControls,operatorState,operatorMatches,actionButtons,amounts,labelledTotal,amountShown,alnum,hasRecipient,mentions,snapshot,previous,signedOut};
 })()"""
 
@@ -265,12 +275,9 @@ if(action==='Pay'){
 }
 const positive=H.buttons().filter(x=>/^(confirm\s*(?:&|and)\s*(?:recharge|pay|activate)|confirm\s+(?:recharge|payment|pay|activation|purchase)|confirm|yes,?\s*(?:confirm|pay|proceed)|proceed to pay)$/i.test(H.label(x)));
 if(positive.length===1&&H.enabled(positive[0])){
-  for(let p=positive[0].parentElement,d=0;p&&d<9;d++,p=p.parentElement){
-    const s=H.tidy(p.innerText||'');if(s.length>1200)break;
-    const sib=H.buttons().filter(x=>p.contains(x));
-    if(sib.some(x=>/^(cancel|back|close|no)$/i.test(H.label(x)))&&/confirm|are you sure|review/i.test(s))
-      return JSON.stringify({classification:'Awaiting confirmation',message:s,actionLabel:H.label(positive[0])});
-  }
+  // Read the whole dialog (its own text, not only the button bar) so its details can be checked.
+  const dlg=H.dialogOf(positive[0],number);
+  if(dlg)return JSON.stringify({classification:'Awaiting confirmation',message:dlg.text,complete:dlg.complete,actionLabel:H.label(positive[0])});
 }
 const old=H.previous();
 const notices=H.all('[role="alert"],[role="status"],[aria-live],.toast,.notification,.alert,[role="dialog"]')
@@ -292,13 +299,10 @@ return JSON.stringify({classification:'Unknown'});""",
 if(!H.trusted()||location.pathname!==path)return JSON.stringify({ok:false,reason:'The Faseyha page changed.'});
 const pos=H.buttons().filter(b=>H.label(b)===expectedLabel&&H.enabled(b));
 if(pos.length===1){
-  for(let p=pos[0].parentElement,d=0;p&&d<9;d++,p=p.parentElement){
-    const s=H.tidy(p.innerText||'');if(s.length>1200)break;
-    const sib=H.buttons().filter(x=>p.contains(x));
-    if(sib.some(b=>/^(cancel|back|close|no)$/i.test(H.label(b)))&&H.hasRecipient(s,number)&&H.mentions(s,op)&&
-       H.amountShown(s,Number(amount))&&/confirm|are you sure|review/i.test(s)){
-      H.snapshot();pos[0].click();return JSON.stringify({ok:true});
-    }
+  // Check only the smallest dialog that shows the recipient, never the page behind it.
+  const dlg=H.dialogOf(pos[0],number);
+  if(dlg&&dlg.complete&&H.mentions(dlg.text,op)&&H.amountShown(H.ownText(dlg.node),Number(amount))){
+    H.snapshot();pos[0].click();return JSON.stringify({ok:true});
   }
 }
 return JSON.stringify({ok:false,reason:'The Faseyha confirmation is missing, changed or ambiguous.'});""",

@@ -2,6 +2,8 @@
 
 ## v2.27 reference added after late Wallet listing
 
+Recharge and Raastas: Faseyha's "Confirm recharge" dialog keeps its buttons in a separate bar. The app read only that bar, found no number or amount, and stopped with "Faseyha's confirmation shows different details" (nothing was paid). It now reads the whole dialog, checks operator, number and "Total to pay" there (never the page behind it), and presses "Confirm & recharge" once.
+
 Faseyha lists bill payments in Wallet only after it confirms them, which can take several minutes. When success is already proven by Faseyha's acceptance and the exact balance drop, the app keeps checking Wallet every 30 seconds for up to 5 minutes and then adds the reference to the result and the payment log. The wallet balance line no longer changes to "not available" after a payment.
 
 ## v2.26 reliable payment confirmation
