@@ -649,10 +649,10 @@ class FaseyhaAssistActivity : Activity() {
                     val reason=when {
                         !data.optBoolean("numberMatch") || !data.optBoolean("amountMatch") ->
                             "The provider form did not retain the recipient or amount."
-                        !data.optBoolean("operatorMatch") ->
-                            "The provider order summary has not confirmed the selected operator."
                         summary.isBlank() ->
                             "Faseyha has not generated an order summary for this account."
+                        !data.optBoolean("operatorMatch") ->
+                            "Faseyha operator could not be verified from its order summary or active operator tab. No payment is authorized."
                         missing.isNotBlank() ->
                             "Faseyha requires additional information: $missing."
                         data.optInt("found")==0 ->
