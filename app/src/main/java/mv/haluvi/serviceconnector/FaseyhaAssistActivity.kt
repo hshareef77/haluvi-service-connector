@@ -1045,18 +1045,15 @@ class FaseyhaAssistActivity : Activity() {
               const leaves=Array.from(item.querySelectorAll('*'))
                 .filter(x=>x.getClientRects().length&&x.children.length===0)
                 .map(x=>tidy(x.textContent)).filter(x=>x.length&&x.length<45);
-              const values=leaves.filter(x=>/^[+−-]?\s*(?:MVR|Rf|ރ|ރ\.)?\s*[\d,]+(?:\.\d{1,2})?$/.test(x))
-                .filter(x=>/[+−-]|(?:MVR|Rf|ރ)/i.test(x)||/\d{1,3},\d{3}/.test(x))
-                .map(x=>x.replace(/[^\d.,]/g,''));
+              // FRF6591... is a reference, not "Rf 6591" currency.
+              const money=/^(?:MVR|MRf|Rf|ރ\.?)[ ]*([+-]?[ ]*[\d,]+(?:\.\d{1,2})?)$/i;
+              const values=leaves.map(x=>x.match(money)).filter(Boolean)
+                  .map(x=>x[1].replace(/[^0-9.,]/g,'')).filter(Boolean);
               let amount=values.length===1?values[0]:'';
               if(!amount){
-                const v=t.match(/(?:MVR|Rf|ރ|ރ\.)\s*([+-]?\s*[\d,]+(?:\.\d{1,2})?)/i);
-                if(v)amount=v[1].trim().replace(/^[+−-]\s*/,'');
-              }
-              if(!amount){
-                const ix=t.search(statusPattern),pre=ix>=0?t.slice(Math.max(0,ix-36),ix):'';
-                const v=pre.match(/(?:^|\s)([+-]?\s*\d[\d,]*(?:\.\d{1,2})?)\s*$/);
-                if(v)amount=v[1].trim().replace(/^[+−-]\s*/,'');
+                  const tNoRef=t.replace(ref,' ');
+                  const m=tNoRef.match(/(?:^|[^a-zA-Z0-9])(?:MVR|MRf|Rf|ރ\.?)[ ]*([+-]?[ ]*[\d,]+(?:\.\d{1,2})?)(?![A-Za-z0-9])/i);
+                  if(m)amount=m[1].replace(/[^0-9.,]/g,'');
               }
               let url='';
               try{
@@ -1099,9 +1096,8 @@ class FaseyhaAssistActivity : Activity() {
                         // is suggestive, but not proof of this specific recipient.
                         val status=matches.first().optString("status")
                         state.text=if(providerAcceptedBill)
-                            "Bill payment submitted successfully. Wallet status: $status. "+
-                                "Receipt details are not available to confirm the recipient."
-                            else "Wallet status: $status. Recipient receipt is not available; review history."
+                            "Bill payment submitted. Wallet status: $status. Receipt unavailable."
+                            else "Wallet status: $status. Receipt unavailable."
                         walletCheckActive=false
                         walletCheckComplete=true
                     }
@@ -1126,8 +1122,10 @@ class FaseyhaAssistActivity : Activity() {
         val amountExpected=(pendingPaymentAmount ?: selectedPackagePrice)?.replace(",","")
             ?.toBigDecimalOrNull()
         val amountSeen=row.optString("amount").replace(",","").toBigDecimalOrNull()
-        if(amountExpected==null || amountSeen==null ||
-            amountExpected.compareTo(amountSeen)!=0)return false
+        // Missing list amount may be recovered from an exact-reference receipt.
+        // Do not treat the wallet row alone as proof of the payment.
+        if(amountExpected==null || (amountSeen!=null &&
+            amountExpected.compareTo(amountSeen)!=0))return false
         val date=row.optString("date")
         val epoch=try {
             val format=java.text.SimpleDateFormat("MMM d, h:mm a",java.util.Locale.ENGLISH)
@@ -1191,9 +1189,8 @@ class FaseyhaAssistActivity : Activity() {
                     walletCheckComplete=true
                     val status=candidate.optString("status")
                     state.text=if(providerAcceptedBill)
-                        "Bill payment submitted successfully. Wallet shows $status, but the "+
-                            "receipt could not confirm the recipient. Check details before paying again."
-                        else "Wallet shows $status, but the recipient could not be confirmed. Check history."
+                        "Bill payment submitted. Wallet status: $status. Recipient not confirmed."
+                        else "Wallet status: $status. Recipient not confirmed."
                 }
             }catch (_:Exception){scheduleWalletRetry()}
         }
