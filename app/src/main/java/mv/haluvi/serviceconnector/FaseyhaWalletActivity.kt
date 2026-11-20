@@ -193,26 +193,19 @@ class FaseyhaWalletActivity : Activity() {
             const date=(text.match(dates)||[])[0]||'';
             const first=text.indexOf(reference);
             const service=trim(first>=0?text.slice(0,first):'').slice(0,100)||'Unknown service';
-            // Amount is often in a separate right-hand column or a sibling element.
-            // Extract from leaf nodes only (avoid dates and reference digits).
-            const leaves=Array.from(item.querySelectorAll('*')).filter(x=>x.getClientRects().length && x.children.length===0)
+            // Do not mistake FRF6591... reference characters for "Rf 6591".
+            // Only accept a clearly labeled currency amount, never nearby digits.
+            const leaves=Array.from(item.querySelectorAll('*'))
+              .filter(x=>x.getClientRects().length && x.children.length===0)
               .map(x=>trim(x.textContent)).filter(x=>x.length && x.length<45);
-            const values=leaves.filter(x=>/^[+−-]?\s*(?:MVR|Rf|ރ|ރ\.)?\s*[\d,]+(?:\.\d{1,2})?$/.test(x))
-              .filter(x=>/[+−-]|(?:MVR|Rf|ރ)/i.test(x) || /\d{1,3},\d{3}/.test(x));
-            let price='';
-            const currencyValues=values.map(x=>x.replace(/[^\d.,]/g,'')).filter(Boolean);
-            if(currencyValues.length===1)price=currencyValues[0];
-            // If no leaf amount is explicitly marked, inspect short text immediately
-            // before the provider status badge, but never invent an amount.
+            const currency=/^(?:MVR|MRf|Rf|ރ\.?)[ ]*([+-]?[ ]*[\d,]+(?:\.\d{1,2})?)$/i;
+            const amounts=leaves.map(x=>x.match(currency)).filter(Boolean)
+              .map(x=>x[1].replace(/[^0-9.,]/g,'')).filter(Boolean);
+            let price=amounts.length===1?amounts[0]:'';
             if(!price){
-              const around=text.match(/(?:MVR|Rf|ރ|ރ\.)\s*([+-]?\s*[\d,]+(?:\.\d{1,2})?)/i);
-              if(around)price=around[1].trim().replace(/[+−]/g,'');
-            }
-            if(!price){
-              const statusIdx=text.search(statusPattern);
-              const preceding=statusIdx>=0?text.slice(Math.max(0,statusIdx-36),statusIdx):'';
-              const num=preceding.match(/(?:^|\s)([+-]?\s*\d[\d,]*(?:\.\d{1,2})?)\s*$/);
-              if(num && /\b\d{1,2}:\d{2}/.test(num[1])===false)price=num[1].trim().replace(/^[+−-]\s*/,'');
+              const withoutRef=text.replace(reference,' ');
+              const labeled=withoutRef.match(/(?:^|[^A-Za-z0-9])(?:MVR|MRf|Rf|ރ\.?)[ ]*([+-]?[ ]*[\d,]+(?:\.\d{1,2})?)(?![A-Za-z0-9])/i);
+              if(labeled)price=labeled[1].replace(/[^0-9.,]/g,'');
             }
             let url='';
             try{const u=new URL(a.href);if(u.protocol==='https:'&&(u.hostname==='faseyha.net'||u.hostname.endsWith('.faseyha.net')))url=u.href}catch(e){}
@@ -244,11 +237,14 @@ class FaseyhaWalletActivity : Activity() {
                 val wholesale=service.contains("wholesale",true)
                 val kind=if(category=="Payments")"Wallet deposit" else ""
                 val date=row.optString("date","Date not identified")
-                val price=row.optString("price").ifBlank{receiptCache[row.optString("reference")]?.optString("amount")?.takeIf{it.isNotBlank()} ?: "amount unavailable"}
+                val price=verifiedAmount(row)
                 val status=row.optString("status","Not shown")
                 val details=receiptCache[row.optString("reference")]
                 val account=details?.optString("account")?.takeIf{it.isNotBlank()} ?: ""
-                val summary=(if(kind.isNotBlank())"$kind. " else "") + "$service. " + (if(account.isNotBlank())"$account. " else "") + "MVR $price. $status. $date."
+                val summary=(if(kind.isNotBlank())"$kind. " else "") + "$service. "+
+                    (if(account.isNotBlank())"$account. " else "Recipient not identified. ")+
+                    (if(price=="Not available")"Amount not available. " else "MVR $price. ")+
+                    "$status. $date."
                 list.addView(Button(this).apply{
                     minHeight=buttonHeight
                     text="$summary View details"
@@ -345,13 +341,17 @@ class FaseyhaWalletActivity : Activity() {
         }
     }
 
+    private fun verifiedAmount(row:JSONObject):String {
+        // Receipt details are stored only after the reference matches.
+        val verified=receiptCache[row.optString("reference")]?.optString("amount").orEmpty()
+        return verified.ifBlank { row.optString("price").ifBlank { "Not available" } }
+    }
     private fun detail(row:JSONObject,kind:String){
         val ref=row.optString("reference")
         val extra=receiptCache[ref]
         val u=Uri.parse(row.optString("url"))
         val account=extra?.optString("account").orEmpty().ifBlank{"Not available yet; open receipt"}
-        val receiptAmount=extra?.optString("amount").orEmpty()
-        val price=row.optString("price").ifBlank{receiptAmount.ifBlank{"Not identified"}}
+        val price=verifiedAmount(row)
         val receiptStatus=extra?.optString("status").orEmpty().ifBlank{"Not inspected"}
         val detailText="Service: "+row.optString("service")+
             "\nRecipient: "+account+
@@ -360,7 +360,7 @@ class FaseyhaWalletActivity : Activity() {
             "\nWallet status: "+row.optString("status")+
             "\nReceipt payment status: "+receiptStatus+
             "\nTransaction reference: "+ref+
-            "\n\nWallet success and receipt payment status do not independently confirm delivery to the mobile recipient."
+            ""
         AlertDialog.Builder(this).setTitle(row.optString("service").ifBlank{kind})
             .setMessage(detailText)
             .setPositiveButton("Open provider receipt"){_,_->
@@ -403,7 +403,7 @@ class FaseyhaWalletActivity : Activity() {
                         "\nRecipient: "+parsed.optString("account").ifBlank{"Not identified"}+
                         "\nAmount: MVR "+parsed.optString("amount").ifBlank{"Not identified"}+
                         "\nReceipt status: "+parsed.optString("status")+
-                        "\n\nPaid in Full confirms payment to provider, not independently mobile recharge delivery.")
+                        "")
                     .setPositiveButton("Back to Wallet"){_,_->
                         receiptReference=null
                         web.loadUrl("https://faseyha.net/wallet")
@@ -470,8 +470,7 @@ class FaseyhaWalletActivity : Activity() {
                 receiptCache[selected.first]=obj
                 saveVerifiedReceipts()
                 if(!isFinishing) {
-                    state.text="Receipt details updated."
-                    if(wallet()) scan()
+                    // Refresh the list once after all receipt lookups to preserve TalkBack focus.
                 }
             }
             finishAutomaticReceipt()
@@ -497,10 +496,11 @@ class FaseyhaWalletActivity : Activity() {
             val ref=row.optString("reference")
             val receipt=receiptCache[ref]
             val account=receipt?.optString("account").orEmpty()
-            val price=row.optString("price").ifBlank{receipt?.optString("amount").orEmpty().ifBlank{"amount unavailable"}}
+            val price=verifiedAmount(row)
             val summary=row.optString("service")+"."+
                 (if(account.isNotBlank())" $account." else " Recipient not identified.")+
-                " MVR $price. "+row.optString("status")+". "+row.optString("date")+"."
+                (if(price=="Not available")" Amount not available." else " MVR $price.")+
+                " "+row.optString("status")+". "+row.optString("date")+"."
             list.addView(Button(this).apply{
                 minHeight=buttonHeight
                 text="$summary View details"
