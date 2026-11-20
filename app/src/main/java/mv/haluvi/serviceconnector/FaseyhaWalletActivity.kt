@@ -251,9 +251,10 @@ class FaseyhaWalletActivity : Activity() {
             .setNegativeButton("Close", null).show()
     }
 
-    private fun inspectManualReceipt() {
+    private fun inspectManualReceipt(attempt: Int = 0) {
         val ref = manualReceipt ?: return
         page.eval(FaseyhaSite.RECEIPT_READ) { d ->
+            if (d?.optString("reference").isNullOrBlank() && attempt < 10) { page.after(700) { inspectManualReceipt(attempt + 1) }; return@eval }
             if (d == null || !ref.equals(d.optString("reference"), true)) return@eval
             receiptCache[ref] = d
             FaseyhaReceipts.put(this, ref, d)
@@ -286,9 +287,13 @@ class FaseyhaWalletActivity : Activity() {
         if (FaseyhaSite.isReceiptUrl(url)) receipts.after(500) { inspectAutomaticReceipt() } else finishAutomaticReceipt()
     }
 
-    private fun inspectAutomaticReceipt() {
+    private fun inspectAutomaticReceipt(attempt: Int = 0) {
         val selected = receiptQueue.firstOrNull() ?: return
         receipts.eval(FaseyhaSite.RECEIPT_READ) { d ->
+            // Wait for the receipt page to fill in its receipt number before reading it.
+            if (d?.optString("reference").isNullOrBlank() && attempt < 10) {
+                receipts.after(700) { inspectAutomaticReceipt(attempt + 1) }; return@eval
+            }
             if (d != null && selected.first.equals(d.optString("reference"), true)) {
                 receiptCache[selected.first] = d
                 FaseyhaReceipts.put(this, selected.first, d)

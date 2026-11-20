@@ -33,7 +33,9 @@ class FaseyhaAssistActivity : Activity() {
     private data class PackageChoice(val text: String, val title: String, val price: BigDecimal?)
 
     private class Txn(val service: FaseyhaService, val recipient: String, var amount: BigDecimal?,
-                      val packageTitle: String?, val balanceBefore: BigDecimal?) {
+                      val packageTitle: String?, var balanceBefore: BigDecimal?) {
+        /** Wallet references listed just before paying; null when they could not be read. */
+        var knownRefs: Set<String>? = null
         var summary = ""
         var startedAt = 0L
         var ledgerId: String? = null
@@ -78,6 +80,7 @@ class FaseyhaAssistActivity : Activity() {
     private var stage = Stage.IDLE
     private var txn: Txn? = null
     private var balance: BigDecimal? = null
+    private var knownRefs: Set<String>? = null
     private var signedOut = false
     private var signInPrompted = false
     private var resumedOnce = false
@@ -382,6 +385,7 @@ class FaseyhaAssistActivity : Activity() {
             }
         }
         txn = Txn(service, recipient, money, chosenPackage?.title, balance)
+        refreshBalance() // fresh balance and Wallet references for checking the result
         stage = Stage.PREPARING
         generation++
         val token = generation
@@ -638,6 +642,8 @@ class FaseyhaAssistActivity : Activity() {
 
     private fun markSubmitted(t: Txn) {
         t.startedAt = System.currentTimeMillis()
+        t.balanceBefore = balance
+        t.knownRefs = knownRefs
         t.ledgerId = FaseyhaLedger.create(this, t.service.label, t.recipient, FaseyhaRules.format(t.amount))
         pageReadyFor = null
     }
@@ -730,10 +736,19 @@ class FaseyhaAssistActivity : Activity() {
 
     private fun readBalance() {
         if (stage == Stage.VERIFYING) return
-        verifier.eval(FaseyhaSite.WALLET_SCAN) { r ->
-            if (r?.optBoolean("signedOut") == true) { handleSignedOut(); return@eval }
-            balance = FaseyhaRules.money(r?.optString("balance"))
-            showBalance()
+        verifier.eval(FaseyhaSite.walletTab("Recharges")) {
+            verifier.after(950) {
+                if (stage == Stage.VERIFYING) return@after
+                verifier.eval(FaseyhaSite.WALLET_SCAN) { r ->
+                    if (stage == Stage.VERIFYING) return@eval
+                    if (r?.optBoolean("signedOut") == true) { handleSignedOut(); return@eval }
+                    balance = FaseyhaRules.money(r?.optString("balance"))
+                    val rows = r?.optJSONArray("rows")
+                    knownRefs = if (rows == null) null
+                        else (0 until rows.length()).mapNotNull { rows.optJSONObject(it)?.optString("reference")?.ifBlank { null } }.toSet()
+                    showBalance()
+                }
+            }
         }
     }
 
@@ -754,8 +769,9 @@ class FaseyhaAssistActivity : Activity() {
             FaseyhaRules.money(r.optString("balance"))?.let { balance = it; showBalance() }
             val rows = r.optJSONArray("rows") ?: JSONArray()
             val matches = (0 until rows.length()).mapNotNull { rows.optJSONObject(it) }.filter {
-                FaseyhaRules.walletRowMatches(t.service, it.optString("service"), it.optString("amount"),
-                    it.optString("date"), t.amount, t.startedAt)
+                val known = t.knownRefs
+                FaseyhaRules.walletRowCandidate(t.service, it.optString("service"), it.optString("amount"),
+                    it.optString("date"), t.amount, t.startedAt, known?.let { k -> it.optString("reference") !in k })
             }
             when {
                 matches.size > 1 -> finish(t, FaseyhaLedger.REVIEW, "More than one recent Wallet entry matches. Check Faseyha Wallet before paying again.")
@@ -769,11 +785,16 @@ class FaseyhaAssistActivity : Activity() {
         }
     }
 
-    private fun verifyReceipt(t: Txn) {
+    private fun verifyReceipt(t: Txn, attempt: Int = 0) {
         val row = t.candidate ?: run { retryWallet(t); return }
         verifier.eval(FaseyhaSite.RECEIPT_READ) { d ->
             if (stage != Stage.VERIFYING || t !== txn) return@eval
-            if (d == null) { finishFromRow(t, row, null); return@eval }
+            // The receipt page fills in after it loads; wait for its receipt number.
+            if (d?.optString("reference").isNullOrBlank()) {
+                if (attempt < 10) verifier.after(700) { verifyReceipt(t, attempt + 1) } else finishFromRow(t, row, null)
+                return@eval
+            }
+            if (d == null) return@eval
             val reference = row.optString("reference")
             if (reference.equals(d.optString("reference"), true)) FaseyhaReceipts.put(this, reference, d)
             if (FaseyhaRules.receiptConfirms(reference, d.optString("reference"), t.recipient, d.optString("account"), t.amount, d.optString("amount")))
@@ -793,6 +814,9 @@ class FaseyhaAssistActivity : Activity() {
             rowStatus.equals("Failed", true) -> finish(t, FaseyhaLedger.FAILED,
                 "Faseyha Wallet shows this payment as failed: $what. Reference $ref.$balanceNote", ref)
             FaseyhaRules.successfulStatus(rowStatus) && receiptConfirmed == true -> finish(t, FaseyhaLedger.SUCCESSFUL,
+                "Payment successful: $what. Reference $ref.$balanceNote", ref)
+            FaseyhaRules.successfulStatus(rowStatus) && receiptConfirmed == null &&
+                FaseyhaRules.balanceDropped(t.balanceBefore, balance, t.amount) -> finish(t, FaseyhaLedger.SUCCESSFUL,
                 "Payment successful: $what. Reference $ref.$balanceNote", ref)
             FaseyhaRules.successfulStatus(rowStatus) -> finish(t, FaseyhaLedger.REVIEW,
                 "Wallet shows Successful for $what, reference $ref, but the receipt could not be checked.$balanceNote", ref)
@@ -814,6 +838,12 @@ class FaseyhaAssistActivity : Activity() {
         t.walletAttempts++
         t.candidate = null
         if (t.walletAttempts >= 7 || System.currentTimeMillis() - t.walletStarted > 90_000L) {
+            if (t.accepted && FaseyhaRules.balanceDropped(t.balanceBefore, balance, t.amount)) {
+                finish(t, FaseyhaLedger.SUCCESSFUL, "Payment successful: ${t.service.label}, ${t.recipient}, " +
+                    "MVR ${FaseyhaRules.format(t.amount)}. Faseyha confirmed it and the wallet balance went down by that amount " +
+                    "to MVR ${FaseyhaRules.format(balance)}. The Wallet entry is not listed yet.")
+                return
+            }
             finish(t, if (t.accepted) FaseyhaLedger.PROCESSING else FaseyhaLedger.REVIEW,
                 if (t.accepted) "Faseyha accepted ${t.service.label} for ${t.recipient}, but Wallet does not show it yet. Check Wallet later; do not pay again."
                 else "The final status is not available yet. Check Faseyha Wallet before paying again.")

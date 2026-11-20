@@ -1,5 +1,11 @@
 # Haluvi Service Connector
 
+## v2.26 reliable payment confirmation
+
+- Just before paying, the app notes which transactions the Wallet already lists. After paying, the new entry is the one that was not there before, so confirmation no longer depends on the phone clock matching Faseyha's clock.
+- Receipt pages are read only after they finish loading (the app waits for the receipt number), so recipient and amount appear for new Wallet entries.
+- When Faseyha accepts the payment and the wallet balance falls by exactly the paid amount, the payment is reported as successful even if the Wallet list is late.
+
 ## v2.25 confirmed operator selection
 
 The app now confirms that Faseyha really selected the operator tab it tapped. A tap made before the page was ready could be ignored, leaving Faseyha's default (Ooredoo) selected for a Dhiraagu Reload. If Faseyha changes the operator after the number is entered, the app selects the requested operator again and re-enters the details. Only if Faseyha still insists does the app stop, explain, and optionally offer the other operator's service after you check the number.

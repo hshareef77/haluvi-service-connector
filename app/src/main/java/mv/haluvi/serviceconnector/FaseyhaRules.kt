@@ -163,13 +163,31 @@ object FaseyhaRules {
     fun walletRowMatches(
         service: FaseyhaService, rowService: String, rowAmount: String?, rowDate: String,
         expected: BigDecimal?, startedAt: Long, now: Long = System.currentTimeMillis()
+    ): Boolean = walletRowCandidate(service, rowService, rowAmount, rowDate, expected, startedAt, null, now)
+
+    /**
+     * Like [walletRowMatches], but when the Wallet references seen just before paying
+     * are known, a reference that was not there before ([isNew]) identifies the new
+     * entry without relying on the phone clock matching Faseyha's clock.
+     */
+    fun walletRowCandidate(
+        service: FaseyhaService, rowService: String, rowAmount: String?, rowDate: String,
+        expected: BigDecimal?, startedAt: Long, isNew: Boolean?, now: Long = System.currentTimeMillis()
     ): Boolean {
         if (expected == null || !mentionsOperator(rowService, service.operator) || !kindMatches(service.kind, rowService)) return false
         val shown = money(rowAmount)
         if (shown != null && !sameMoney(shown, expected)) return false
-        val time = parseWalletDate(rowDate, now) ?: return false
-        return recentEnough(time, startedAt)
+        val time = parseWalletDate(rowDate, now)
+        return when (isNew) {
+            false -> false
+            true -> time == null || startedAt - time < 24 * 3600_000L
+            null -> time != null && recentEnough(time, startedAt)
+        }
     }
+
+    /** The wallet balance fell by exactly the paid amount. */
+    fun balanceDropped(before: BigDecimal?, after: BigDecimal?, amount: BigDecimal?) =
+        before != null && after != null && sameMoney(before - after, amount)
 
     /** Final verdict from a provider receipt: same reference, recipient and amount. */
     fun receiptConfirms(

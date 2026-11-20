@@ -100,4 +100,22 @@ class FaseyhaRulesTest {
         assertFalse(FaseyhaRules.receiptConfirms("FRF123456789", "FRF123456789", "7971234", "7970000", BigDecimal("250"), "250.00"))
         assertFalse(FaseyhaRules.receiptConfirms("FRF123456789", "FRF123456789", "7971234", "7971234", BigDecimal("250"), "25.00"))
     }
+
+    @Test fun newWalletReferenceIdentifiesPaymentWithoutClockMatch() {
+        val started = at(2026, Calendar.NOVEMBER, 20, 19, 4)
+        val now = at(2026, Calendar.NOVEMBER, 20, 19, 6)
+        val amount = BigDecimal("10.00")
+        // Phone clock in a different time zone: the time window fails, the new reference still matches.
+        assertTrue(FaseyhaRules.walletRowCandidate(ooredooBill, "Ooredoo Bill", "", "Nov 20, 2:04 PM", amount, started, true, now))
+        assertFalse(FaseyhaRules.walletRowCandidate(ooredooBill, "Ooredoo Bill", "", "Nov 20, 2:04 PM", amount, started, null, now))
+        assertFalse(FaseyhaRules.walletRowCandidate(ooredooBill, "Ooredoo Bill", "", "Nov 20, 7:04 PM", amount, started, false, now))
+        assertFalse(FaseyhaRules.walletRowCandidate(ooredooBill, "Ooredoo Bill", "", "Nov 18, 7:04 PM", amount, started, true, now))
+        assertTrue(FaseyhaRules.walletRowCandidate(ooredooBill, "Ooredoo Bill", "", "Nov 20, 7:04 PM", amount, started, null, now))
+    }
+
+    @Test fun balanceDropMustEqualTheAmount() {
+        assertTrue(FaseyhaRules.balanceDropped(BigDecimal("10.80"), BigDecimal("0.80"), BigDecimal("10.00")))
+        assertFalse(FaseyhaRules.balanceDropped(BigDecimal("10.80"), BigDecimal("10.80"), BigDecimal("10.00")))
+        assertFalse(FaseyhaRules.balanceDropped(null, BigDecimal("0.80"), BigDecimal("10.00")))
+    }
 }
