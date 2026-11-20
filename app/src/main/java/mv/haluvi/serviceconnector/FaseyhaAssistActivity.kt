@@ -850,6 +850,44 @@ class FaseyhaAssistActivity : Activity() {
         }
         val js="""(function(){
             const clean=x=>(x||'').replace(/\s+/g,' ').trim();
+            const page=document.body.innerText||'';
+            const wantedRecipient=__TARGET__;
+            const wantedAmount=Number(__MONEY__);
+            const wantedOperator=__OP__;
+            const billPayment=__ACTION__==='Pay';
+            // BillPay uses a result modal, not a second confirmation.
+            // Inspect the fully rendered confirmation, even when it is not
+            // exposed through aria-live or marked as a fresh line.
+            const successNodes=Array.from(document.querySelectorAll('h1,h2,h3,h4,[role="heading"],div,p,section'))
+                .filter(x=>x.getClientRects().length>0 &&
+                    /^bill\s*payment\s*successful$/i.test(clean(x.innerText||'')))
+                .slice(0,12);
+            let billReceipt=null;
+            if(billPayment && successNodes.length){
+                for(const node of successNodes){
+                    let parent=node;
+                    for(let depth=0;parent&&depth<7;parent=parent.parentElement,depth++){
+                        const summary=clean(parent.innerText||'');
+                        if(summary.length>1000)break;
+                        const hasSubmission=/\bsubmitted\b/i.test(summary) &&
+                            /being processed|notify you once|once it.s confirmed/i.test(summary);
+                        const hasProvider=summary.toLowerCase().includes(wantedOperator.toLowerCase());
+                        const hasRecipient=new RegExp('(^|\\D)'+wantedRecipient.replace(/[.*+?^$\x7b\x7d()|[\]\\]/g,'\\            const clean=x=>(x||'').replace(/\s+/g,' ').trim();
+            let old=window.__haluviBeforeSubmit||[];')+'(\\D|$)').test(summary);
+                        const money=summary.match(/(?:MVR|Rf|ރ)\s*([0-9,]+(?:\.[0-9]{1,2})?)/i);
+                        const total=money?Number(money[1].replace(/,/g,'')):NaN;
+                        if(hasSubmission && hasProvider && hasRecipient && Number.isFinite(total) &&
+                           total===wantedAmount){
+                            billReceipt={classification:'Provider accepted payment',
+                                message:'Bill payment submitted',recipient:wantedRecipient,
+                                amount:total,operator:wantedOperator};
+                            break;
+                        }
+                    }
+                    if(billReceipt)break;
+                }
+            }
+            if(billReceipt)return JSON.stringify(billReceipt);
             let old=window.__haluviBeforeSubmit||[];
             if(!old.length){try{old=JSON.parse(sessionStorage.getItem("haluvi_before_submit")||"[]");}catch(e){}}
             const oldSet=new Set(old.map(clean));
