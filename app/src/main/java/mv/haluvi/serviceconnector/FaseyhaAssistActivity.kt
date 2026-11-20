@@ -723,8 +723,21 @@ class FaseyhaAssistActivity : Activity() {
             if(priorSummary && priorSummary!==summary) return JSON.stringify({ok:false,reason:'Order summary changed'});
             if(!new RegExp('(^|\\D)'+recipient+'(\\D|$)').test(summary||text))
                 return JSON.stringify({ok:false,reason:'Recipient not confirmed'});
-            if(!(summary||text).toLowerCase().includes(operatorName.toLowerCase()))
-                return JSON.stringify({ok:false,reason:'Operator not verified'});
+            const visible=x=>x.getClientRects().length>0 && getComputedStyle(x).visibility!=='hidden';
+            const tabs=Array.from(document.querySelectorAll('button,[role="tab"],[role="radio"],[role="button"]'))
+                .filter(visible).filter(x=>['dhiraagu','ooredoo','medianet'].includes(
+                    clean(x.innerText||x.getAttribute('aria-label')).toLowerCase()));
+            const active=x=>{
+                if(['aria-selected','aria-checked','aria-pressed'].some(k=>x.getAttribute(k)==='true')||
+                    ['active','checked'].includes(x.getAttribute('data-state')))return true;
+                const cls=(' '+(typeof x.className==='string'?x.className:'')+' ').toLowerCase();
+                return /(?:^|[\s_-])(selected|active|checked|current)(?:[\s_-]|$)/.test(cls);
+            };
+            const activeTabs=tabs.filter(active);
+            const selectedTab=tabs.length===3 && activeTabs.length===1 &&
+                clean(activeTabs[0].innerText||activeTabs[0].getAttribute('aria-label')).toLowerCase()===operatorName.toLowerCase();
+            if(!(summary.toLowerCase().includes(operatorName.toLowerCase()) || selectedTab))
+                return JSON.stringify({ok:false,reason:'Provider operator not independently verified by summary or selected tab'});
             if(action==='Activate package'){
                 if(!summary||!/\bpackage\b/i.test(summary)||!/\btotal\b/i.test(summary))
                     return JSON.stringify({ok:false,reason:'Provider package summary missing'});
@@ -737,7 +750,6 @@ class FaseyhaAssistActivity : Activity() {
             }
             // The provider can display "Recharge 12.00" instead of just "Recharge".
             // Never click if missing, disabled or ambiguous.
-            const visible=x=>x.getClientRects().length>0 && getComputedStyle(x).visibility!=='hidden';
             const candidates=Array.from(document.querySelectorAll('button,input[type="submit"],[role="button"]'))
                 .filter(visible).filter(x=>{
                     const raw=[x.innerText,x.value,x.getAttribute('aria-label')].filter(Boolean).map(clean);
