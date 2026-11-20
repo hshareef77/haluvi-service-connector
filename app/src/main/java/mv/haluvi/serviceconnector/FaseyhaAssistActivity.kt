@@ -733,6 +733,11 @@ class FaseyhaAssistActivity : Activity() {
             const clean=t=>(t||'').replace(/\s+/g,' ').trim();
             const text=document.body.innerText||'',i=text.toLowerCase().lastIndexOf('order summary');
             const summary=i<0?'':clean(text.slice(i,i+900));
+            // A previous provider submission can leave a success/submitted modal open.
+            // Do not click Pay again through it.
+            if(action==='Pay' && /bill\s*payment\s*successful/i.test(text) &&
+               /\b(submitted|being processed|notify you once)\b/i.test(text))
+                return JSON.stringify({ok:false,reason:'Faseyha already shows a submitted bill payment. Check Wallet before attempting another.'});
             if(priorSummary && priorSummary!==summary) return JSON.stringify({ok:false,reason:'Order summary changed'});
             // Quick Pay displays recipient in an input, not body.innerText.
             // For bill payments the exact value is independently checked below.
