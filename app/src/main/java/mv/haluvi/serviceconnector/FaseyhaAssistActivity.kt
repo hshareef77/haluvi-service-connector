@@ -29,6 +29,11 @@ class FaseyhaAssistActivity : Activity() {
     private lateinit var amount: EditText
     private lateinit var service: Button
     private lateinit var operator: Button
+    private val serviceChoices = arrayOf(
+        "Dhiraagu Reload", "Ooredoo Raastas", "Dhiraagu Bill Pay",
+        "Ooredoo Bill Pay", "Medianet Bill Pay", "Dhiraagu Packages", "Ooredoo Packages"
+    )
+    private var selectedServiceChoice = 0
     private var serviceIndex = 0
     private var operatorIndex = 0
     private val services = arrayOf("Recharge", "Package Recharge", "Bill Pay")
@@ -70,21 +75,18 @@ class FaseyhaAssistActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             setPadding(16.dp, 10.dp, 16.dp, 10.dp)
         }
-        val title = TextView(this).apply { text = "Faseyha assisted recharge"; textSize = 22f; if (android.os.Build.VERSION.SDK_INT >= 28) isAccessibilityHeading = true }
+        val title = TextView(this).apply { text = "Haluvi Service Connector"; textSize = 22f; if (android.os.Build.VERSION.SDK_INT >= 28) isAccessibilityHeading = true }
         layout.addView(title)
         layout.addView(TextView(this).apply {
-            text = "Choose service, operator, and recipient. For packages select a package. Review the actual provider total before confirming a payment."
+            text = "Choose service and recipient. Review the provider total before confirming any payment."
         })
         service = Button(this).apply {
             minHeight = 56.dp
             setOnClickListener { chooseService() }
         }
         layout.addView(service)
-        operator = Button(this).apply {
-            minHeight = 56.dp
-            setOnClickListener { chooseOperator() }
-        }
-        layout.addView(operator)
+        operator = Button(this).apply { visibility = View.GONE }
+        // The selected service determines the operator: a second selector is unnecessary.
         packageCategory = Button(this).apply {
             minHeight = 56.dp
             text = "Package category: All. Choose category"
@@ -101,7 +103,7 @@ class FaseyhaAssistActivity : Activity() {
         layout.addView(packageChoice)
         updateSelections()
         number = EditText(this).apply {
-            hint = "Mobile number"; inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS; setSingleLine(true)
+            hint = "Mobile number"; inputType = InputType.TYPE_CLASS_PHONE; setSingleLine(true)
         }
         layout.addView(number)
         amount = EditText(this).apply {
@@ -117,7 +119,7 @@ class FaseyhaAssistActivity : Activity() {
                 text = label; minHeight = 48.dp; setOnClickListener { work() }
             })
         }
-        primary.addView(Button(this).apply { text = "Continue — prepare and review"; minHeight = 56.dp; setOnClickListener { prepareSelectedService() } })
+        primary.addView(Button(this).apply { text = "Continue"; minHeight = 56.dp; setOnClickListener { prepareSelectedService() } })
 
 
         primary.addView(Button(this).apply { text = "Faseyha Wallet and Transactions"; minHeight = 56.dp; setOnClickListener {
@@ -196,56 +198,55 @@ class FaseyhaAssistActivity : Activity() {
     }
 
     private fun updateSelections() {
-        service.text = "Service: " + services[serviceIndex] + ". Select to change"
-        service.contentDescription = "Service, selected " + services[serviceIndex] + ". Double tap to change."
-        val currentOperator = if (serviceIndex == 2) billOperators[billOperatorIndex] else operators[operatorIndex]
-        operator.text = "Operator: " + currentOperator + ". Select to change"
-        operator.contentDescription = "Operator, selected " + currentOperator + ". Double tap to change."
-        operator.visibility = View.VISIBLE
-        if (::packageCategory.isInitialized) packageCategory.visibility = if (serviceIndex == 1 && operatorIndex == 1) View.VISIBLE else View.GONE
-        if (::packageChoice.isInitialized) packageChoice.visibility = if (serviceIndex == 1) View.VISIBLE else View.GONE
+        val name=serviceChoices[selectedServiceChoice]
+        service.text="Service: $name. Change"
+        service.contentDescription="Service, selected $name. Double tap to change."
+        operator.visibility=View.GONE
+        if (::packageCategory.isInitialized)
+            packageCategory.visibility=if(serviceIndex==1 && operatorIndex==1) View.VISIBLE else View.GONE
+        if (::packageChoice.isInitialized)
+            packageChoice.visibility=if(serviceIndex==1) View.VISIBLE else View.GONE
         if (::amount.isInitialized) {
-            amount.visibility = if (serviceIndex == 1) View.GONE else View.VISIBLE
-            amount.isEnabled = serviceIndex != 1
+            amount.visibility=if(serviceIndex==1) View.GONE else View.VISIBLE
+            amount.isEnabled=serviceIndex!=1
         }
         if (::number.isInitialized) {
-            number.hint = if (serviceIndex == 2) "Account or service number" else "Mobile number (7 digits)"
-            number.contentDescription = number.hint
+            val bill=serviceIndex==2
+            number.hint=if(bill) "Account or service number" else "Mobile number (7 digits)"
+            number.contentDescription=number.hint
+            number.inputType=if(bill)
+                InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS
+                else InputType.TYPE_CLASS_PHONE
         }
     }
 
     private fun chooseService() {
-        AlertDialog.Builder(this).setTitle("Choose service. Currently " + services[serviceIndex])
-            .setSingleChoiceItems(services, serviceIndex) { dialog, selected ->
+        AlertDialog.Builder(this).setTitle("Choose service. Currently "+serviceChoices[selectedServiceChoice])
+            .setSingleChoiceItems(serviceChoices,selectedServiceChoice){dialog,selected->
                 dialog.dismiss()
-                if (serviceIndex != selected) {
-                    serviceIndex = selected
-                    submissionAttempted = false
+                if(selected!=selectedServiceChoice) {
+                    if(submissionAttempted) {
+                        message("A payment was already attempted. Check Wallet before preparing another transaction.")
+                        return@setSingleChoiceItems
+                    }
+                    selectedServiceChoice=selected
+                    when(selected) {
+                        0 -> {serviceIndex=0;operatorIndex=1}
+                        1 -> {serviceIndex=0;operatorIndex=0}
+                        2 -> {serviceIndex=2;billOperatorIndex=0}
+                        3 -> {serviceIndex=2;billOperatorIndex=1}
+                        4 -> {serviceIndex=2;billOperatorIndex=2}
+                        5 -> {serviceIndex=1;operatorIndex=1}
+                        else -> {serviceIndex=1;operatorIndex=0}
+                    }
+                    number.text?.clear()
+                    amount.text?.clear()
                     clearPackageSelection()
                     updateSelections()
-                    pendingOperator = true
+                    pendingOperator=true
                     openFaseyhaPath(selectedPath())
                 }
-            }.setNegativeButton("Cancel", null).show()
-    }
-
-    private fun chooseOperator() {
-        val choices = if (serviceIndex == 2) billOperators else operators
-        val index = if (serviceIndex == 2) billOperatorIndex else operatorIndex
-        AlertDialog.Builder(this).setTitle("Choose operator. Currently " + choices[index])
-            .setSingleChoiceItems(choices, index) { dialog, selected ->
-                dialog.dismiss()
-                if (serviceIndex == 2) billOperatorIndex = selected else operatorIndex = selected
-                submissionAttempted = false
-                clearPackageSelection()
-                updateSelections()
-                if (isTrusted() && Uri.parse(web.url ?: "").path == selectedPath()) {
-                    applyOperator(false)
-                } else {
-                    pendingOperator = true
-                    openFaseyhaPath(selectedPath())
-                }
-            }.setNegativeButton("Cancel", null).show()
+            }.setNegativeButton("Cancel",null).show()
     }
 
     private fun chooseNativePackageCategory() {
@@ -455,7 +456,7 @@ class FaseyhaAssistActivity : Activity() {
                 state.text="Package recipient matches. Review provider details before payment."
                 AlertDialog.Builder(this).setTitle("Review Faseyha package — no payment submitted")
                     .setMessage("Operator: ${operators[operatorIndex]}\nRecipient: $target\nSelected package: $shortName\n\nActual provider order summary:\n$summary\n\nConfirm the amount and total before selecting Activate package.")
-                    .setPositiveButton("Activate package"){_,_->confirmFinalSubmission(target,null,summary)}
+                    .setPositiveButton("Confirm"){_,_->submitOnce(target,null,summary)}
                     .setNegativeButton("Review website",null)
                     .show()
             } catch (_:Exception) { message("Could not read the provider order summary. No payment was submitted.") }
@@ -567,7 +568,7 @@ class FaseyhaAssistActivity : Activity() {
                     "\n\nNo payment has been submitted."
                 AlertDialog.Builder(this).setTitle("Review "+action+" — not submitted")
                     .setMessage(details)
-                    .setPositiveButton(action){_,_->if(serviceIndex==0)submitOnce(target,money,summary) else confirmFinalSubmission(target,money,summary)}
+                    .setPositiveButton("Confirm"){_,_->submitOnce(target,money,summary)}
                     .setNegativeButton("Review website",null).show()
             }catch(_:Exception){message("Provider summary cannot be read. No payment submitted.")}
         }
