@@ -872,8 +872,7 @@ class FaseyhaAssistActivity : Activity() {
                         const hasSubmission=/\bsubmitted\b/i.test(summary) &&
                             /being processed|notify you once|once it.s confirmed/i.test(summary);
                         const hasProvider=summary.toLowerCase().includes(wantedOperator.toLowerCase());
-                        const hasRecipient=new RegExp('(^|\\D)'+wantedRecipient.replace(/[.*+?^$\x7b\x7d()|[\]\\]/g,'\\            const clean=x=>(x||'').replace(/\s+/g,' ').trim();
-            let old=window.__haluviBeforeSubmit||[];')+'(\\D|$)').test(summary);
+                        const hasRecipient=summary.toUpperCase().includes(wantedRecipient.toUpperCase());
                         const money=summary.match(/(?:MVR|Rf|ރ)\s*([0-9,]+(?:\.[0-9]{1,2})?)/i);
                         const total=money?Number(money[1].replace(/,/g,'')):NaN;
                         if(hasSubmission && hasProvider && hasRecipient && Number.isFinite(total) &&
@@ -943,7 +942,11 @@ class FaseyhaAssistActivity : Activity() {
                 }
             }
             return JSON.stringify({classification:classification,message:message,pathname:location.pathname});
-        })();""".replace("__ACTION__",JSONObject.quote(pendingPaymentAction ?: ""))
+        })();"""
+            .replace("__ACTION__",JSONObject.quote(pendingPaymentAction ?: ""))
+            .replace("__TARGET__",JSONObject.quote(pendingPaymentRecipient.orEmpty()))
+            .replace("__MONEY__",JSONObject.quote(pendingPaymentAmount ?: selectedPackagePrice ?: ""))
+            .replace("__OP__",JSONObject.quote(if(serviceIndex==2)billOperators[billOperatorIndex] else operators[operatorIndex]))
         web.evaluateJavascript(js){raw->
             if(!observingProviderResult || providerResultNoticeShown || isFinishing)return@evaluateJavascript
             try{
