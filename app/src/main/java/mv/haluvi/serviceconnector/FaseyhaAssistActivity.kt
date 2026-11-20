@@ -531,6 +531,8 @@ class FaseyhaAssistActivity : Activity() {
               const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;
               setter.call(x,value);x.dispatchEvent(new Event('input',{bubbles:true}));
               x.dispatchEvent(new Event('change',{bubbles:true}));
+              // Some bill-pay forms validate after the field loses focus.
+              x.dispatchEvent(new FocusEvent('blur'));
            }
            update(num[0],number);update(amt[0],amount);
            const verified = num[0].value === number && amt[0].value === amount;
@@ -560,35 +562,75 @@ class FaseyhaAssistActivity : Activity() {
     // A reactive provider form can update its summary and enable the submit button
     // AFTER native input/change events. Wait for the visible provider state to settle
     // before displaying the final authorization dialog.
+    // Wait for Faseyha's validation before allowing the native payment review.
+    // This does not click any payment control.
     private fun reviewWhenReady(target:String,money:String,attempt:Int) {
         if (!isTrusted() || Uri.parse(web.url ?: "").path!=selectedPath()) {
             message("Provider page changed. Nothing was submitted.");return
         }
-        val script="""(function(){
+        val script="""(function(target,amount,operatorName){
             const tidy=x=>(x||'').replace(/\s+/g,' ').trim();
-            const t=document.body.innerText||'',i=t.toLowerCase().lastIndexOf('order summary');
-            const summary=i<0?'':tidy(t.slice(i,i+900));
+            const body=document.body.innerText||'',i=body.toLowerCase().lastIndexOf('order summary');
+            const summary=i<0?'':tidy(body.slice(i,i+900));
             const visible=x=>x.getClientRects().length>0 && getComputedStyle(x).visibility!=='hidden';
             const action=__ACTION__;
             const candidates=Array.from(document.querySelectorAll('button,input[type="submit"],[role="button"]'))
-                .filter(visible).filter(x=>matchesAction(x,action));
-            function matchesAction(x,a){
-                const labels=[x.innerText,x.value,x.getAttribute('aria-label')].filter(Boolean).map(v=>tidy(v).toLowerCase());
-                return labels.some(label=>a==='Recharge'?/^recharge(?:\s+(?:mvr|rf|ރ)?\s*\d[\d,.]*)?$/.test(label):
-                    a==='Pay'?/^pay(?:\s+(?:mvr|rf|ރ)?\s*\d[\d,.]*)?$/.test(label):
-                    /^activate package(?:\s+(?:mvr|rf|ރ)?\s*\d[\d,.]*)?$/.test(label));
-            }
-            const enabled=candidates.filter(x=>!x.disabled && x.getAttribute('aria-disabled')!=='true' && getComputedStyle(x).pointerEvents!=='none');
-            return JSON.stringify({summary:summary,found:candidates.length,enabled:enabled.length});
-        })();""".replace("__ACTION__",JSONObject.quote(if(serviceIndex==0)"Recharge" else "Pay"))
+                .filter(visible).filter(x=>{
+                    const labels=[x.innerText,x.value,x.getAttribute('aria-label')].filter(Boolean)
+                        .map(v=>tidy(v).toLowerCase());
+                    return labels.some(label=>action==='Recharge'
+                        ?/^recharge(?:\s+(?:mvr|rf|ރ)?\s*\d[\d,.]*)?$/.test(label)
+                        :/^pay(?:\s+(?:mvr|rf|ރ)?\s*\d[\d,.]*)?$/.test(label));
+                });
+            const enabled=candidates.filter(x=>!x.disabled &&
+                x.getAttribute('aria-disabled')!=='true' && getComputedStyle(x).pointerEvents!=='none');
+            const inputs=Array.from(document.querySelectorAll('input'))
+                .filter(x=>visible(x)&&!x.disabled&&!['password','hidden','submit','button','radio','checkbox'].includes((x.type||'').toLowerCase()));
+            const numberMatch=inputs.some(x=>tidy(x.value)===target);
+            const amountMatch=inputs.some(x=>Number(x.value)===Number(amount));
+            const invalid=inputs.filter(x=>x.required && !x.checkValidity())
+                .map(x=>tidy(x.getAttribute('aria-label')||x.placeholder||x.name||x.id).slice(0,60));
+            const operatorMatch=summary.toLowerCase().includes(operatorName.toLowerCase());
+            return JSON.stringify({summary:summary,found:candidates.length,enabled:enabled.length,
+                numberMatch:numberMatch,amountMatch:amountMatch,invalid:invalid,
+                operatorMatch:operatorMatch});
+        })(__TARGET__,__MONEY__,__OP__);"""
+            .replace("__ACTION__",JSONObject.quote(if(serviceIndex==0)"Recharge" else "Pay"))
+            .replace("__TARGET__",JSONObject.quote(target))
+            .replace("__MONEY__",JSONObject.quote(money))
+            .replace("__OP__",JSONObject.quote(if(serviceIndex==2)billOperators[billOperatorIndex] else operators[operatorIndex]))
         web.evaluateJavascript(script){raw->
             try{
                 val data=JSONObject(org.json.JSONArray("[$raw]").getString(0))
-                if(data.optString("summary").isNotBlank() && data.optInt("enabled") == 1) {
+                val summary=data.optString("summary")
+                if(summary.isNotBlank() && data.optInt("enabled")==1 &&
+                    data.optBoolean("numberMatch") && data.optBoolean("amountMatch") &&
+                    data.optBoolean("operatorMatch")) {
                     reviewFinalAction(target,money)
-                } else if(attempt<9) web.postDelayed({reviewWhenReady(target,money,attempt+1)},500)
-                else {
-                    state.text="Faseyha has not enabled a unique payment button. Verify its required fields below. No payment submitted."
+                } else if(attempt<19) {
+                    if(attempt==4 || attempt==12)
+                        state.text="Waiting for Faseyha to validate the account and enable payment. No payment has been submitted."
+                    web.postDelayed({reviewWhenReady(target,money,attempt+1)},650)
+                } else {
+                    val invalid=data.optJSONArray("invalid")
+                    val missing=if(invalid!=null && invalid.length()>0)
+                        (0 until invalid.length()).joinToString(", "){invalid.optString(it)} else ""
+                    val reason=when {
+                        !data.optBoolean("numberMatch") || !data.optBoolean("amountMatch") ->
+                            "The provider form did not retain the recipient or amount."
+                        !data.optBoolean("operatorMatch") ->
+                            "The provider order summary has not confirmed the selected operator."
+                        summary.isBlank() ->
+                            "Faseyha has not generated an order summary for this account."
+                        missing.isNotBlank() ->
+                            "Faseyha requires additional information: $missing."
+                        data.optInt("found")==0 ->
+                            "The Faseyha payment control was not found."
+                        data.optInt("enabled")==0 ->
+                            "Faseyha's Pay button is still disabled. The provider may require account validation or an additional form step."
+                        else -> "More than one payment control was found; automatic payment was blocked."
+                    }
+                    state.text="$reason No payment was submitted. Review the website below."
                     message(state.text.toString())
                 }
             }catch(_:Exception){message("Unable to verify provider readiness. No payment submitted.")}
