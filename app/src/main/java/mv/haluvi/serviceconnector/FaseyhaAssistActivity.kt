@@ -35,7 +35,7 @@ class FaseyhaAssistActivity : Activity() {
     )
     private var selectedServiceChoice = 0
     private var serviceIndex = 0
-    private var operatorIndex = 0
+    private var operatorIndex = 1
     private val services = arrayOf("Recharge", "Package Recharge", "Bill Pay")
     private val operators = arrayOf("Ooredoo", "Dhiraagu")
     private val billOperators = arrayOf("Dhiraagu", "Ooredoo", "Medianet")
@@ -191,7 +191,7 @@ class FaseyhaAssistActivity : Activity() {
                         pendingPreparation = false
                         web.postDelayed({ prepareWhenReady(0) }, 1200)
                     }
-                    if (!observingProviderResult && isTrusted()) state.text = if (Uri.parse(url).path.isNullOrBlank() || Uri.parse(url).path == "/") "Faseyha homepage loaded. Open Dashboard and a payment form in the website below before inspecting." else "Faseyha page loaded. Open the relevant number and amount form, then inspect."
+                    if (!observingProviderResult && !submissionAttempted && isTrusted()) state.text = if (Uri.parse(url).path.isNullOrBlank() || Uri.parse(url).path == "/") "Faseyha homepage loaded. Open Dashboard and a payment form in the website below before inspecting." else "Faseyha page loaded. Open the relevant number and amount form, then inspect."
                     else if (!isTrusted()) state.text = "This page is outside faseyha.net. The native field assistant is disabled."
                 }
             }
@@ -1139,7 +1139,7 @@ class FaseyhaAssistActivity : Activity() {
             .replace("__TARGET__",JSONObject.quote(target))
             .replace("__OP__",JSONObject.quote(op))
             .replace("__ACTION__",JSONObject.quote(action))
-            .replace("__MONEY__",JSONObject.quote(money ?: ""))
+            .replace("__MONEY__",JSONObject.quote(money ?: selectedPackagePrice ?: ""))
             .replace("__LABEL__",JSONObject.quote(expectedLabel))
         web.evaluateJavascript(js){raw->
             try{
@@ -1525,6 +1525,15 @@ class FaseyhaAssistActivity : Activity() {
         if (::web.isInitialized && web.canGoBack()) web.goBack() else super.onBackPressed()
     }
     override fun onDestroy() {
+        walletCheckActive=false
+        if (::walletVerifier.isInitialized) {
+            (walletVerifier.parent as? ViewGroup)?.removeView(walletVerifier)
+            walletVerifier.destroy()
+        }
+        if (::receiptVerifier.isInitialized) {
+            (receiptVerifier.parent as? ViewGroup)?.removeView(receiptVerifier)
+            receiptVerifier.destroy()
+        }
         if (::web.isInitialized) {
             (web.parent as? ViewGroup)?.removeView(web)
             web.destroy()
