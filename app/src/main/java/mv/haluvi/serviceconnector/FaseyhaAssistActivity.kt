@@ -692,10 +692,11 @@ class FaseyhaAssistActivity : Activity() {
                 val summary=JSONObject(org.json.JSONArray("[$raw]").getString(0)).optString("summary")
                 val op=if(serviceIndex==2)billOperators[billOperatorIndex] else operators[operatorIndex]
                 val action=if(serviceIndex==0)"Recharge" else "Pay"
-                val details="Service: "+services[serviceIndex]+"\nOperator: "+op+
+                val details="Service: "+serviceChoices[selectedServiceChoice]+
                     "\nRecipient/account: "+target+"\nAmount: MVR "+money+
-                    (if(summary.isNotBlank())"\n\nProvider summary:\n"+summary else "\n\nProvider summary not available; form values will be checked before submission.")+
-                    "\n\nNo payment has been submitted."
+                    (if(summary.isNotBlank())"\n\nFaseyha order summary:\n"+summary else
+                        "\n\nFaseyha Quick Pay does not display an order summary. The selected provider, account, amount and enabled Pay control were verified.")+
+                    "\n\nConfirm authorizes this payment once. No payment has been submitted yet."
                 AlertDialog.Builder(this).setTitle("Review "+action+" — not submitted")
                     .setMessage(details)
                     .setPositiveButton("Confirm"){_,_->submitOnce(target,money,summary)}
@@ -747,8 +748,17 @@ class FaseyhaAssistActivity : Activity() {
             const activeTabs=tabs.filter(active);
             const selectedTab=tabs.length===3 && activeTabs.length===1 &&
                 clean(activeTabs[0].innerText||activeTabs[0].getAttribute('aria-label')).toLowerCase()===operatorName.toLowerCase();
-            if(!(summary.toLowerCase().includes(operatorName.toLowerCase()) || selectedTab))
-                return JSON.stringify({ok:false,reason:'Provider operator not independently verified by summary or selected tab'});
+            const headings=Array.from(document.querySelectorAll('h1,h2,h3,h4,[role="heading"]'))
+                .filter(visible).map(x=>clean(x.innerText||x.textContent).toLowerCase());
+            const providerHeading=headings.some(x=>x===operatorName.toLowerCase()||
+                x.startsWith(operatorName.toLowerCase()+' /'));
+            const providerCard=text.toLowerCase().includes('pay any '+operatorName.toLowerCase())||
+                (operatorName==='Ooredoo' && text.toLowerCase().includes('pay any ooredoo postpaid'));
+            const billOperatorMatched=selectedTab || (providerHeading && providerCard);
+            const operatorMatched=action==='Pay'?billOperatorMatched:
+                (summary.toLowerCase().includes(operatorName.toLowerCase()) || selectedTab);
+            if(!operatorMatched)
+                return JSON.stringify({ok:false,reason:'Selected provider does not match the authorized transaction'});
             if(action==='Activate package'){
                 if(!summary||!/\bpackage\b/i.test(summary)||!/\btotal\b/i.test(summary))
                     return JSON.stringify({ok:false,reason:'Provider package summary missing'});
