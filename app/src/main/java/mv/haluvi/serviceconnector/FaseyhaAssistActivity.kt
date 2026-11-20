@@ -49,6 +49,15 @@ class FaseyhaAssistActivity : Activity() {
     private var pendingPaymentAction: String? = null
     private var providerResultNoticeShown = false
     private var submissionStartedAt: Long = 0L
+    private lateinit var walletVerifier: WebView
+    private lateinit var receiptVerifier: WebView
+    private var walletCheckActive = false
+    private var walletCheckComplete = false
+    private var walletCheckAttempts = 0
+    private var receiptCheckReference: String? = null
+    private var receiptCandidate: JSONObject? = null
+    private var walletCheckStartedAt = 0L
+    private var approvedSummary: String? = null
     private lateinit var packageCategory: Button
     private lateinit var packageChoice: Button
     private var selectedPackageLabel: String? = null
@@ -192,6 +201,43 @@ class FaseyhaAssistActivity : Activity() {
         layout.addView(TextView(this).apply { text = "Provider website. If preparing opens a different service page, allow it to load and activate Prepare form again. The website may require further service selections. Additional browser and inspection controls are below." })
         layout.addView(web, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 460.dp))
         layout.addView(actions)
+        // Read-only background browser shares the authenticated Faseyha cookie jar.
+        // It never submits transactions. Keep it out of accessibility focus.
+        walletVerifier = WebView(this).apply {
+            settings.javaScriptEnabled=true
+            settings.domStorageEnabled=true
+            settings.allowFileAccess=false
+            settings.allowContentAccess=false
+            importantForAccessibility=View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
+            webViewClient=object:WebViewClient() {
+                override fun shouldOverrideUrlLoading(view:WebView,request:WebResourceRequest):Boolean {
+                    return request.url.scheme!="https" || !trusted(request.url.host)
+                }
+                override fun onPageFinished(view:WebView,url:String) {
+                    if(walletCheckActive && Uri.parse(url).path=="/wallet" && trusted(Uri.parse(url).host))
+                        view.postDelayed({ scanVerificationWallet(0) },1000)
+                }
+            }
+        }
+        layout.addView(walletVerifier,LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,1.dp))
+        receiptVerifier = WebView(this).apply {
+            settings.javaScriptEnabled=true
+            settings.domStorageEnabled=true
+            settings.allowFileAccess=false
+            settings.allowContentAccess=false
+            importantForAccessibility=View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
+            webViewClient=object:WebViewClient() {
+                override fun shouldOverrideUrlLoading(view:WebView,request:WebResourceRequest):Boolean {
+                    return request.url.scheme!="https" || !trusted(request.url.host)
+                }
+                override fun onPageFinished(view:WebView,url:String) {
+                    if(walletCheckActive && receiptCheckReference!=null &&
+                        Uri.parse(url).path?.startsWith("/invoice/")==true && trusted(Uri.parse(url).host))
+                        view.postDelayed({ inspectVerificationReceipt() },650)
+                }
+            }
+        }
+        layout.addView(receiptVerifier,LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,1.dp))
         val scroller = ScrollView(this).apply { isFillViewport = true; addView(layout) }
         setContentView(scroller)
         web.loadUrl(homeUrl)
@@ -652,6 +698,10 @@ class FaseyhaAssistActivity : Activity() {
                     pendingPaymentAction=action
                     submissionAttempted=true
                     submissionStartedAt=System.currentTimeMillis()
+                    approvedSummary=reviewedSummary
+                    walletCheckActive=false
+                    walletCheckComplete=false
+                    walletCheckAttempts=0
                     observingProviderResult=true
                     providerResultNoticeShown=false
                     state.text="Provider "+action+" button pressed once. Checking Faseyha response. Do not retry."
@@ -672,14 +722,15 @@ class FaseyhaAssistActivity : Activity() {
         if (attempt > 35) {
             observingProviderResult = false
             providerResultNoticeShown = true
-            state.text = "Final website result not confirmed. Checking Wallet without resubmitting."
-            openWalletVerification()
+            state.text = "Request processed. Checking Wallet internally; do not retry."
+            startInternalWalletCheck()
             return
         }
         if(!isTrusted()) {
             observingProviderResult=false
             providerResultNoticeShown=true
-            message("Provider navigated outside Faseyha. Status unknown. Check Wallet before retrying.")
+            state.text="Provider page changed. Checking Wallet internally; no payment will be repeated."
+            startInternalWalletCheck()
             return
         }
         val js="""(function(){
@@ -748,6 +799,7 @@ class FaseyhaAssistActivity : Activity() {
                     // Processing is not a final result. Continue observing without resubmitting.
                     if(attempt==0 || attempt==10 || attempt==25)
                         state.text="Faseyha is processing. Waiting for a final result; do not retry."
+                    if(attempt==7) startInternalWalletCheck()
                     web.postDelayed({checkProviderResult(attempt+1)},1100)
                 } else if(classification!="Unknown"){
                     observingProviderResult=false
@@ -756,11 +808,11 @@ class FaseyhaAssistActivity : Activity() {
                     state.text="Faseyha response: $classification. Verify the provider transaction in Wallet."
                     if(classification=="Provider reported success") {
                         state.text="Faseyha reports success. Checking Wallet and matching receipt without resubmitting."
-                        web.postDelayed({if(!isFinishing)openWalletVerification()},800)
+                        web.postDelayed({if(!isFinishing)startInternalWalletCheck()},800)
                     }else {
                         AlertDialog.Builder(this).setTitle("Faseyha response — $classification")
                             .setMessage("Provider displayed:\n$providerMessage\n\nCheck Wallet and receipt before retrying. A website response alone is not proof of delivery.")
-                            .setPositiveButton("Verify in Wallet"){_,_->openWalletVerification()}
+                            .setPositiveButton("Check Wallet internally"){_,_->startInternalWalletCheck()}
                             .setNegativeButton("Close",null).show()
                     }
                 }else web.postDelayed({checkProviderResult(attempt+1)},900)
@@ -784,40 +836,39 @@ class FaseyhaAssistActivity : Activity() {
     // A separate native confirmation is required for Faseyha's own modal.
     // The final provider modal must be present, visible, uniquely actionable and
     // contain the originally reviewed recipient, operator and amount.
+    // The user authorized this exact transaction once on our native review.
+    // Provider's later confirmation is accepted only when all details still match.
     private fun showSecondStageConfirmation(providerText:String, buttonLabel:String) {
         val target=pendingPaymentRecipient ?: return
         val action=pendingPaymentAction ?: return
         val money=pendingPaymentAmount
-        if(!isTrusted() || Uri.parse(web.url ?: "").path!=selectedPath()) {
-            message("Provider page changed. Check Wallet before retrying.");return
+        if(!submissionAttempted || approvedSummary==null ||
+            !isTrusted() || Uri.parse(web.url ?: "").path!=selectedPath()) {
+            state.text="Provider confirmation cannot be safely matched. Review Wallet; do not retry."
+            return
         }
         val normalized=providerText.replace(Regex("\\s+")," ")
-        val recipientDigits=normalized.replace(Regex("[^0-9]"),"")
-        if(!recipientDigits.contains(target.filter(Char::isDigit))) {
-            message("Faseyha confirmation does not show the expected recipient. No final payment made.");return
+        if(!normalized.replace(Regex("[^0-9]"),"").contains(target.filter(Char::isDigit))) {
+            state.text="Provider recipient changed. Confirmation stopped; check Wallet."
+            return
         }
-        val selectedOperator=if(serviceIndex==2)billOperators[billOperatorIndex] else operators[operatorIndex]
-        if(!normalized.contains(selectedOperator,ignoreCase=true)) {
-            message("Faseyha confirmation operator differs from the selected operator. Nothing submitted.");return
+        val op=if(serviceIndex==2)billOperators[billOperatorIndex] else operators[operatorIndex]
+        if(!normalized.contains(op,ignoreCase=true)) {
+            state.text="Provider operator changed. Confirmation stopped; check Wallet."
+            return
         }
-        // The provider's Recharge amount excludes GST. Compare the total amount
-        // charged, not the displayed pre-tax amount, against the user's input.
-        val totalMatch=Regex("total\\s+to\\s+pay\\s*(?:MVR|Rf|ރ)?\\s*([0-9,]+(?:\\.[0-9]{1,2})?)",RegexOption.IGNORE_CASE).find(normalized)
+        val totalMatch=Regex("total\\s+to\\s+pay\\s*(?:MVR|Rf|ރ)?\\s*([0-9,]+(?:\\.[0-9]{1,2})?)",
+            RegexOption.IGNORE_CASE).find(normalized)
         val total=totalMatch?.groupValues?.get(1)?.replace(",","")?.toBigDecimalOrNull()
-        if(money!=null && (total==null || total.compareTo(money.toBigDecimalOrNull() ?: java.math.BigDecimal("-1"))!=0)) {
-            message("Provider confirmation total does not match the requested amount. No payment was completed.");return
+        val approvedTotal=if(money!=null) money.toBigDecimalOrNull()
+            else selectedPackagePrice?.replace(",","")?.toBigDecimalOrNull()
+        // Never silently accept an unknown price or a modified provider total.
+        if(total==null || approvedTotal==null || total.compareTo(approvedTotal)!=0) {
+            state.text="Provider final total differs or is unavailable. Nothing confirmed. Review website and Wallet."
+            return
         }
-        val summary="Faseyha is asking for a second confirmation.\n\n"+
-            "Service: "+services[serviceIndex]+"\nRecipient: "+target+
-            (if(money!=null)"\nRequested amount: MVR "+money else "\nPackage: "+selectedPackageLabel.orEmpty())+
-            "\n\nFaseyha dialog:\n"+providerText.take(850)+
-            "\n\nThis confirmation can spend wallet funds. Only confirm if all details agree."
-        state.text="Faseyha confirmation is open. Review the provider dialog before final authorization."
-        AlertDialog.Builder(this).setTitle("Final Faseyha confirmation")
-            .setMessage(summary)
-            .setNegativeButton("Review website"){_,_-> state.text="Faseyha confirmation remains open; no final click made." }
-            .setPositiveButton("Confirm "+action){_,_->pressSecondStageConfirmation(target,money,buttonLabel)}
-            .show()
+        state.text="Provider confirmation matches your authorization. Submitting once, then verifying."
+        pressSecondStageConfirmation(target,money,buttonLabel)
     }
 
     private fun pressSecondStageConfirmation(target:String,money:String?,expectedLabel:String) {
