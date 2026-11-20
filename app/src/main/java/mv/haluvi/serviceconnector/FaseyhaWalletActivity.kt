@@ -350,17 +350,16 @@ class FaseyhaWalletActivity : Activity() {
         val ref=row.optString("reference")
         val extra=receiptCache[ref]
         val u=Uri.parse(row.optString("url"))
-        val account=extra?.optString("account").orEmpty().ifBlank{"Not available yet; open receipt"}
+        val account=extra?.optString("account").orEmpty().ifBlank{"Not identified"}
         val price=verifiedAmount(row)
-        val receiptStatus=extra?.optString("status").orEmpty().ifBlank{"Not inspected"}
+        val receiptStatus=extra?.optString("status").orEmpty()
         val detailText="Service: "+row.optString("service")+
             "\nRecipient: "+account+
-            "\nAmount: MVR "+price+
+            (if(price=="Not available")"\nAmount: Not available" else "\nAmount: MVR "+price)+
+            "\nStatus: "+row.optString("status")+
+            (if(receiptStatus.isNotBlank())"\nReceipt: "+receiptStatus else "")+
             "\nDate: "+row.optString("date")+
-            "\nWallet status: "+row.optString("status")+
-            "\nReceipt payment status: "+receiptStatus+
-            "\nTransaction reference: "+ref+
-            ""
+            "\nReference: "+ref
         AlertDialog.Builder(this).setTitle(row.optString("service").ifBlank{kind})
             .setMessage(detailText)
             .setPositiveButton("Open provider receipt"){_,_->
@@ -469,9 +468,6 @@ class FaseyhaWalletActivity : Activity() {
             if(obj!=null && selected.first.equals(obj.optString("reference"),true)){
                 receiptCache[selected.first]=obj
                 saveVerifiedReceipts()
-                if(!isFinishing) {
-                    // Refresh the list once after all receipt lookups to preserve TalkBack focus.
-                }
             }
             finishAutomaticReceipt()
         }
