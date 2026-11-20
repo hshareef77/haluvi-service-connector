@@ -822,7 +822,7 @@ class FaseyhaAssistActivity : Activity() {
                     providerAcceptedBill=false
                     observingProviderResult=true
                     providerResultNoticeShown=false
-                    state.text="Provider "+action+" button pressed once. Checking Faseyha response. Do not retry."
+                    state.text="Processing your request. Please do not submit it again."
                     web.postDelayed({ checkProviderResult(0) },750)
                 } else {
                     state.text="Submission blocked: "+obj.optString("reason")+". No provider transaction was confirmed."
@@ -937,6 +937,10 @@ class FaseyhaAssistActivity : Activity() {
                    /\b(being processed|submitted|notify you once|once it.s confirmed)\b/i.test(document.body.innerText||'')){
                     classification='Provider accepted payment';message=line;break;
                 }
+                // BillPay's headline can render before the operator, recipient,
+                // amount and Submitted details. The separate receipt matcher above
+                // must validate all of them before reporting acceptance.
+                if(billPayment && /bill\s*payment\s*successful/i.test(line))continue;
                 if(/\b(successful|successfully|payment completed|transaction completed|activated successfully|recharge complete)\b/i.test(line)){
                     classification='Provider reported success';message=line;break;
                 }
