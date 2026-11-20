@@ -933,10 +933,6 @@ class FaseyhaAssistActivity : Activity() {
                 if(/\b(failed|declined|unsuccessful|rejected|payment error|transaction error)\b/i.test(line)){
                     classification='Failed';message=line;break;
                 }
-                if(/\bbill\s*payment\s*successful\b/i.test(line) &&
-                   /\b(being processed|submitted|notify you once|once it.s confirmed)\b/i.test(document.body.innerText||'')){
-                    classification='Provider accepted payment';message=line;break;
-                }
                 // BillPay's headline can render before the operator, recipient,
                 // amount and Submitted details. The separate receipt matcher above
                 // must validate all of them before reporting acceptance.
