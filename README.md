@@ -1,5 +1,9 @@
 # Haluvi Service Connector
 
+## v2.29 recharge receipts and receipt text copy
+
+Recharge and Raastas receipts were never read (the Wallet showed "Recipient not identified"), so those payments were confirmed by the exact balance drop instead. Receipts are now recognized by the Wallet reference itself and accept more total labels. **View in Wallet, transaction, Copy receipt text** copies a receipt's visible text so its exact layout can be checked.
+
 ## v2.28 Wallet list updates as receipts are read
 
 Confirmed on the phone with 2.27: Dhiraagu Reload, Ooredoo Raastas, Dhiraagu Bill Pay and Ooredoo Bill Pay complete end to end. The Wallet screen now shows each entry's recipient and amount as soon as its receipt is read, instead of after the whole batch, and picks up receipts already read by the payment screen when you return to it.

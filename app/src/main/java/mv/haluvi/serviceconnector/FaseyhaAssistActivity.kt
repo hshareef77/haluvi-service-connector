@@ -832,7 +832,7 @@ class FaseyhaAssistActivity : Activity() {
 
     private fun verifyReceipt(t: Txn, attempt: Int = 0) {
         val row = t.candidate ?: run { retryWallet(t); return }
-        verifier.eval(FaseyhaSite.RECEIPT_READ) { d ->
+        verifier.eval(FaseyhaSite.receiptRead(row.optString("reference"))) { d ->
             if (stage != Stage.VERIFYING || t !== txn) return@eval
             // The receipt page fills in after it loads; wait for its receipt number.
             if (d?.optString("reference").isNullOrBlank()) {

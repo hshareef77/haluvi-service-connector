@@ -104,7 +104,8 @@ class FaseyhaWalletActivity : Activity() {
         val path = FaseyhaSite.pathOf(url)
         when {
             path == "/wallet" -> page.after(350) { selectCategory { scan() } }
-            FaseyhaSite.isReceiptUrl(url) -> page.after(300) { inspectManualReceipt() }
+            FaseyhaSite.isReceiptUrl(url) -> copyReceipt?.let { ref -> page.after(500) { copyReceiptText(ref) } }
+                ?: page.after(300) { inspectManualReceipt() }
             else -> page.eval(FaseyhaSite.SIGNED_OUT) { r ->
                 if (r?.optBoolean("signedOut") == true || path == null) handleSignedOut()
                 else status.text = "Faseyha opened ${path} instead of Wallet."
@@ -251,12 +252,35 @@ class FaseyhaWalletActivity : Activity() {
                     screen.showWeb(page, "Faseyha receipt $ref")
                 }
             }
+            .apply {
+                if (FaseyhaSite.isReceiptUrl(url)) setNeutralButton("Copy receipt text") { _, _ ->
+                    copyReceipt = ref
+                    status.text = "Reading the receipt text…"
+                    page.openUrl(url)
+                }
+            }
             .setNegativeButton("Close", null).show()
+    }
+
+    private var copyReceipt: String? = null
+
+    /** Copies a receipt's visible text so it can be shared for support. */
+    private fun copyReceiptText(ref: String, attempt: Int = 0) {
+        page.eval(FaseyhaSite.RECEIPT_TEXT) { r ->
+            val text = r?.optString("text").orEmpty()
+            if (!text.contains(ref, true) && attempt < 10) { page.after(700) { copyReceiptText(ref, attempt + 1) }; return@eval }
+            copyReceipt = null
+            (getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager)
+                .setPrimaryClip(android.content.ClipData.newPlainText("Faseyha receipt", "Faseyha receipt ${r?.optString("path")}\n\n$text"))
+            android.widget.Toast.makeText(this, "Receipt text copied", android.widget.Toast.LENGTH_SHORT).show()
+            status.text = "Receipt text copied. Paste it in a message to share it."
+            page.open("/wallet")
+        }
     }
 
     private fun inspectManualReceipt(attempt: Int = 0) {
         val ref = manualReceipt ?: return
-        page.eval(FaseyhaSite.RECEIPT_READ) { d ->
+        page.eval(FaseyhaSite.receiptRead(ref)) { d ->
             if (d?.optString("reference").isNullOrBlank() && attempt < 10) { page.after(700) { inspectManualReceipt(attempt + 1) }; return@eval }
             if (d == null || !ref.equals(d.optString("reference"), true)) return@eval
             receiptCache[ref] = d
@@ -292,7 +316,7 @@ class FaseyhaWalletActivity : Activity() {
 
     private fun inspectAutomaticReceipt(attempt: Int = 0) {
         val selected = receiptQueue.firstOrNull() ?: return
-        receipts.eval(FaseyhaSite.RECEIPT_READ) { d ->
+        receipts.eval(FaseyhaSite.receiptRead(selected.first)) { d ->
             // Wait for the receipt page to fill in its receipt number before reading it.
             if (d?.optString("reference").isNullOrBlank() && attempt < 10) {
                 receipts.after(700) { inspectAutomaticReceipt(attempt + 1) }; return@eval

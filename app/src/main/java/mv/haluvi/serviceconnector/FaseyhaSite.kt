@@ -349,15 +349,22 @@ const m=H.buttons().filter(x=>!x.disabled&&/^load more$/i.test(H.label(x)));
 if(m.length!==1)return JSON.stringify({ok:false});
 m[0].click();return JSON.stringify({ok:true});""")
 
-    val RECEIPT_READ = script("""
+    /** Reads a receipt. [expected] is the Wallet reference; finding it on the page identifies the receipt. */
+    fun receiptRead(expected: String) = script("""
 const t=H.body();
-const reference=(t.match(/receipt\s*(?:no\.?|number)\s*:?\s*([A-Z0-9]{8,45})/i)||[])[1]||'';
-const total=(t.match(/(?:total amount|amount paid)\s*(?:MVR|Rf|ރ|ރ\.)?\s*([\d,]+(?:\.\d{1,2})?)/i)||[])[1]||'';
-const service=(t.match(/description\s+([\s\S]{0,120}?)(?:total amount|amount paid)/i)||[])[1]||'';
+const want=String(expected||'').replace(/[^A-Za-z0-9]/g,'');
+const labelled=(t.match(/(?:receipt|invoice|reference|transaction)\s*(?:no\.?|number|id|#)?\s*[:#]?\s*((?=[A-Z]*\d)[A-Z0-9]{8,45})/i)||[])[1]||'';
+const reference=want&&new RegExp('(^|[^A-Z0-9])'+want+'([^A-Z0-9]|$)','i').test(t)?want:labelled;
+let total=(t.match(/(?:total amount|amount paid)\s*(?:MVR|Rf|ރ|ރ\.)?\s*([\d,]+(?:\.\d{1,2})?)/i)||[])[1]||'';
+if(!total){const v=H.labelledTotal(t);if(Number.isFinite(v))total=String(v);}
+const service=(t.match(/description\s+([\s\S]{0,120}?)(?:total amount|amount paid|total|amount|qty|quantity)/i)||[])[1]||'';
 const billTo=(t.match(/bill to\s+([A-Z0-9-]{5,32})/i)||[])[1]||'';
 const cands=(service.match(/\b[A-Z0-9-]{7,30}\b/gi)||[]).filter(x=>/\d/.test(x));
 return JSON.stringify({reference:reference,account:cands.find(x=>/^BB/i.test(x))||cands[cands.length-1]||billTo,
-  amount:total,description:H.tidy(service).slice(0,120),status:/\bpaid in full\b/i.test(t)?'Paid in full':'Not identified'});""")
+  amount:total,description:H.tidy(service).slice(0,120),status:/\bpaid in full\b/i.test(t)?'Paid in full':'Not identified'});""", "expected" to expected)
+
+    /** Visible text of a receipt page, copied only when the person asks for it. */
+    val RECEIPT_TEXT = script("""return JSON.stringify({path:location.pathname,text:H.body().slice(0,4000)});""")
 
     /** Labels and structure only; input values are reported as filled or empty. */
     val PAGE_REPORT = script("""
