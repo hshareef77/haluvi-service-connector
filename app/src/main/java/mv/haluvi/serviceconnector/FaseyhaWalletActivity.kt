@@ -446,7 +446,7 @@ class FaseyhaWalletActivity : Activity() {
     }
 
     private fun startAutomaticReceipt(){
-        if(receiptBusy || receiptQueue.isEmpty() || automaticReceiptReads>=12) return
+        if(receiptBusy || receiptQueue.isEmpty() || automaticReceiptReads>=receiptBatchLimit) return
         receiptBusy=true
         automaticReceiptReads++
         receiptWeb.loadUrl(receiptQueue.first().second)
@@ -485,7 +485,28 @@ class FaseyhaWalletActivity : Activity() {
             receiptWeb.postDelayed({startAutomaticReceipt()},450)
         else if(!isFinishing && wallet()) {
             checkRequestedTransaction()
-            scan()
+            // Refresh the visible list once after the receipt batch; do not create a
+            // recursive scan loop for invoices whose details are unavailable.
+            if(receiptQueue.isEmpty()) refreshReceiptLabels()
+        }
+    }
+
+    private fun refreshReceiptLabels(){
+        list.removeAllViews()
+        records.values.forEach{row->
+            val ref=row.optString("reference")
+            val receipt=receiptCache[ref]
+            val account=receipt?.optString("account").orEmpty()
+            val price=row.optString("price").ifBlank{receipt?.optString("amount").orEmpty().ifBlank{"amount unavailable"}}
+            val summary=row.optString("service")+"."+
+                (if(account.isNotBlank())" $account." else " Recipient not identified.")+
+                " MVR $price. "+row.optString("status")+". "+row.optString("date")+"."
+            list.addView(Button(this).apply{
+                minHeight=buttonHeight
+                text="$summary View details"
+                contentDescription="$summary View details and transaction reference."
+                setOnClickListener{detail(row,if(category=="Payments")"Wallet deposit" else "")}
+            })
         }
     }
 
