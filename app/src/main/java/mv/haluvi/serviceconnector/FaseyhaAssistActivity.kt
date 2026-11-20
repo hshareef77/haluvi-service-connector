@@ -59,6 +59,8 @@ class FaseyhaAssistActivity : Activity() {
     private var walletCheckStartedAt = 0L
     private var approvedSummary: String? = null
     private var providerAcceptedBill = false
+    private lateinit var continueButton: Button
+    private lateinit var newPaymentButton: Button
     private lateinit var packageCategory: Button
     private lateinit var packageChoice: Button
     private var selectedPackageLabel: String? = null
@@ -129,7 +131,48 @@ class FaseyhaAssistActivity : Activity() {
                 text = label; minHeight = 48.dp; setOnClickListener { work() }
             })
         }
-        primary.addView(Button(this).apply { text = "Continue"; minHeight = 56.dp; setOnClickListener { prepareSelectedService() } })
+        continueButton=Button(this).apply {
+            text="Continue";minHeight=56.dp
+            setOnClickListener { prepareSelectedService() }
+        }
+        primary.addView(continueButton)
+        newPaymentButton=Button(this).apply {
+            text="New transaction";minHeight=56.dp;visibility=View.GONE
+            setOnClickListener {
+                if(walletCheckActive){
+                    state.text="Checking the previous payment. Review its status before starting another."
+                }else AlertDialog.Builder(this@FaseyhaAssistActivity)
+                    .setTitle("New transaction")
+                    .setMessage("Your previous request may already be charged. Check Wallet before repeating it. Start a new transaction?")
+                    .setNegativeButton("Cancel",null)
+                    .setPositiveButton("Start"){_,_->
+                        submissionAttempted=false
+                        observingProviderResult=false
+                        providerResultNoticeShown=false
+                        providerAcceptedBill=false
+                        approvedSummary=null
+                        pendingPaymentRecipient=null
+                        pendingPaymentAmount=null
+                        pendingPaymentAction=null
+                        submissionStartedAt=0L
+                        walletCheckActive=false
+                        walletCheckComplete=false
+                        receiptCandidate=null
+                        receiptCheckReference=null
+                        number.text?.clear()
+                        amount.text?.clear()
+                        clearPackageSelection()
+                        continueButton.isEnabled=true
+                        newPaymentButton.visibility=View.GONE
+                        web.visibility=View.VISIBLE
+                        actions.visibility=View.GONE
+                        pendingOperator=true
+                        openFaseyhaPath(selectedPath())
+                        state.text="Enter the details for your new transaction."
+                    }.show()
+            }
+        }
+        primary.addView(newPaymentButton)
 
 
         primary.addView(Button(this).apply { text = "Faseyha Wallet and Transactions"; minHeight = 56.dp; setOnClickListener {
@@ -139,9 +182,10 @@ class FaseyhaAssistActivity : Activity() {
 
 
 
-        primary.addView(Button(this).apply { text = "More browser and inspection controls"; minHeight = 56.dp; setOnClickListener {
+        primary.addView(Button(this).apply { text = "Website options"; minHeight = 56.dp; setOnClickListener {
             actions.visibility = if (actions.visibility == View.GONE) View.VISIBLE else View.GONE
-            text = if (actions.visibility == View.VISIBLE) "Hide extra browser controls" else "More browser and inspection controls"
+            if(actions.visibility == View.VISIBLE)web.visibility=View.VISIBLE
+            text = if (actions.visibility == View.VISIBLE) "Hide website options" else "Website options"
         } })
         action("Apply operator again") { applyOperator() }
         action("Read provider order summary") { readOrderSummary() }
@@ -814,6 +858,7 @@ class FaseyhaAssistActivity : Activity() {
                     pendingPaymentAmount=money
                     pendingPaymentAction=action
                     submissionAttempted=true
+                    continueButton.isEnabled=false
                     submissionStartedAt=System.currentTimeMillis()
                     approvedSummary=reviewedSummary
                     walletCheckActive=false
@@ -968,6 +1013,7 @@ class FaseyhaAssistActivity : Activity() {
                     observingProviderResult=false
                     providerResultNoticeShown=true
                     if(classification=="Provider reported success" || classification=="Provider accepted payment") {
+                        finishPaymentScreen()
                         providerAcceptedBill=serviceIndex==2
                         state.text=if(providerAcceptedBill)
                             "Bill payment submitted successfully to Faseyha for "+
@@ -991,6 +1037,14 @@ class FaseyhaAssistActivity : Activity() {
     }
 
     // Internal read-only reconciliation. No navigation and no payment retries.
+    private fun finishPaymentScreen() {
+        if(!::newPaymentButton.isInitialized)return
+        continueButton.isEnabled=false
+        newPaymentButton.visibility=View.VISIBLE
+        if(::web.isInitialized)web.visibility=View.GONE
+        // Keep advanced controls available only on demand.
+    }
+
     private fun startInternalWalletCheck() {
         if (walletCheckComplete || isFinishing || submissionStartedAt==0L) return
         if (!::walletVerifier.isInitialized) return
@@ -1085,6 +1139,7 @@ class FaseyhaAssistActivity : Activity() {
                         else "Multiple recent transactions match. Please check Wallet before trying again."
                     walletCheckActive=false
                     walletCheckComplete=true
+                    finishPaymentScreen()
                 }else if(matches.size==1){
                     receiptCandidate=matches.first()
                     val url=matches.first().optString("url")
@@ -1100,6 +1155,7 @@ class FaseyhaAssistActivity : Activity() {
                             else "Wallet status: $status. Receipt unavailable."
                         walletCheckActive=false
                         walletCheckComplete=true
+                        finishPaymentScreen()
                     }
                 } else scheduleWalletRetry()
             }catch (_:Exception){scheduleWalletRetry()}
@@ -1178,6 +1234,7 @@ class FaseyhaAssistActivity : Activity() {
                     walletCheckActive=false
                     walletCheckComplete=true
                     observingProviderResult=false
+                    finishPaymentScreen()
                     val status=candidate.optString("status")
                     state.text=(if(status.equals("Successful",true)||status.equals("Completed",true))
                         "Payment successful in Faseyha Wallet. "
@@ -1187,6 +1244,7 @@ class FaseyhaAssistActivity : Activity() {
                 }else {
                     walletCheckActive=false
                     walletCheckComplete=true
+                    finishPaymentScreen()
                     val status=candidate.optString("status")
                     state.text=if(providerAcceptedBill)
                         "Bill payment submitted. Wallet status: $status. Recipient not confirmed."
@@ -1204,6 +1262,7 @@ class FaseyhaAssistActivity : Activity() {
         if(walletCheckAttempts>=7 || System.currentTimeMillis()-walletCheckStartedAt>90000L){
             walletCheckActive=false
             walletCheckComplete=true
+            finishPaymentScreen()
             state.text=if(providerAcceptedBill)
                 "Bill payment submitted successfully to Faseyha. Final Wallet confirmation is not available yet. "+
                     "Please check history before making another payment."
