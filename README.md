@@ -1,5 +1,9 @@
 # Haluvi Service Connector
 
+## v2.27 reference added after late Wallet listing
+
+Faseyha lists bill payments in Wallet only after it confirms them, which can take several minutes. When success is already proven by Faseyha's acceptance and the exact balance drop, the app keeps checking Wallet every 30 seconds for up to 5 minutes and then adds the reference to the result and the payment log. The wallet balance line no longer changes to "not available" after a payment.
+
 ## v2.26 reliable payment confirmation
 
 - Just before paying, the app notes which transactions the Wallet already lists. After paying, the new entry is the one that was not there before, so confirmation no longer depends on the phone clock matching Faseyha's clock.

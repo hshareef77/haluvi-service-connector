@@ -48,6 +48,9 @@ class FaseyhaAssistActivity : Activity() {
         var candidate: JSONObject? = null
         var outcome = ""
         var reselected = false
+        /** Keep looking for the Wallet entry after success was proven by the balance. */
+        var lateWanted = false
+        var lateChecks = 0
     }
 
     private lateinit var screen: EngineScreen
@@ -710,21 +713,63 @@ class FaseyhaAssistActivity : Activity() {
         verifier.open("/wallet")
     }
 
+    private var verifierLoads = 0
+
     private fun onVerifierLoaded(url: String) {
         val t = txn
         val path = FaseyhaSite.pathOf(url)
+        // A page can report "finished" more than once; act only on the latest load.
+        val load = ++verifierLoads
+        fun latest(work: () -> Unit) = { if (load == verifierLoads) work() }
+        val wallet = path?.startsWith("/wallet") == true
         if (stage == Stage.VERIFYING && t != null) {
             when {
-                path == "/wallet" -> verifier.after(1000) { verifyWallet(t, 0) }
-                FaseyhaSite.isReceiptUrl(url) -> verifier.after(650) { verifyReceipt(t) }
-                else -> retryWallet(t)
+                wallet -> verifier.after(1000, latest { verifyWallet(t, 0) })
+                FaseyhaSite.isReceiptUrl(url) -> verifier.after(650, latest { verifyReceipt(t) })
+                path != null -> retryWallet(t)
             }
             return
         }
-        if (path == "/wallet") verifier.after(800) { readBalance() }
-        else verifier.eval(FaseyhaSite.SIGNED_OUT) { r ->
+        if (stage == Stage.DONE && t != null && t.lateWanted && wallet) {
+            verifier.after(1000, latest { lateScan(t) }); return
+        }
+        if (wallet) verifier.after(800, latest { readBalance() })
+        else if (path != null) verifier.eval(FaseyhaSite.SIGNED_OUT) { r ->
             if (r?.optBoolean("signedOut") == true && stage == Stage.IDLE) handleSignedOut()
-            else balanceText.text = "Wallet balance: not available"
+            else if (balance == null) balanceText.text = "Wallet balance: not available"
+            else showBalance()
+        }
+    }
+
+    /** After success proven by the balance, wait for Faseyha to list the entry and add its reference. */
+    private fun scheduleLateCheck(t: Txn) {
+        if (t !== txn || !t.lateWanted || t.lateChecks >= 10) { t.lateWanted = false; return }
+        t.lateChecks++
+        verifier.after(30_000) { if (t === txn && t.lateWanted && stage == Stage.DONE) verifier.open("/wallet") }
+    }
+
+    private fun lateScan(t: Txn) {
+        verifier.eval(FaseyhaSite.walletTab("Recharges")) {
+            verifier.after(950) {
+                verifier.eval(FaseyhaSite.WALLET_SCAN) { r ->
+                    if (t !== txn || !t.lateWanted || stage != Stage.DONE) return@eval
+                    FaseyhaRules.money(r?.optString("balance"))?.let { balance = it; showBalance() }
+                    val rows = r?.optJSONArray("rows") ?: JSONArray()
+                    val matches = (0 until rows.length()).mapNotNull { rows.optJSONObject(it) }.filter {
+                        FaseyhaRules.walletRowCandidate(t.service, it.optString("service"), it.optString("amount"),
+                            it.optString("date"), t.amount, t.startedAt, t.knownRefs?.let { k -> it.optString("reference") !in k })
+                    }
+                    if (matches.size == 1) {
+                        t.lateWanted = false
+                        val ref = matches[0].optString("reference")
+                        val message = "Payment successful: ${t.service.label}, ${t.recipient}, MVR ${FaseyhaRules.format(t.amount)}. " +
+                            "Reference $ref, now listed in Faseyha Wallet." + balanceChange(t)
+                        t.ledgerId?.let { FaseyhaLedger.update(this, it, FaseyhaLedger.SUCCESSFUL, message, ref) }
+                        say(message)
+                    } else if (matches.size > 1) t.lateWanted = false
+                    else scheduleLateCheck(t)
+                }
+            }
         }
     }
 
@@ -841,7 +886,9 @@ class FaseyhaAssistActivity : Activity() {
             if (t.accepted && FaseyhaRules.balanceDropped(t.balanceBefore, balance, t.amount)) {
                 finish(t, FaseyhaLedger.SUCCESSFUL, "Payment successful: ${t.service.label}, ${t.recipient}, " +
                     "MVR ${FaseyhaRules.format(t.amount)}. Faseyha confirmed it and the wallet balance went down by that amount " +
-                    "to MVR ${FaseyhaRules.format(balance)}. The Wallet entry is not listed yet.")
+                    "to MVR ${FaseyhaRules.format(balance)}. Faseyha has not listed it in Wallet yet; the app keeps checking for its reference.")
+                t.lateWanted = true
+                scheduleLateCheck(t)
                 return
             }
             finish(t, if (t.accepted) FaseyhaLedger.PROCESSING else FaseyhaLedger.REVIEW,
