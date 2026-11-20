@@ -58,6 +58,7 @@ class FaseyhaAssistActivity : Activity() {
     private var receiptCandidate: JSONObject? = null
     private var walletCheckStartedAt = 0L
     private var approvedSummary: String? = null
+    private var providerAcceptedBill = false
     private lateinit var packageCategory: Button
     private lateinit var packageChoice: Button
     private var selectedPackageLabel: String? = null
@@ -817,6 +818,7 @@ class FaseyhaAssistActivity : Activity() {
                     walletCheckActive=false
                     walletCheckComplete=false
                     walletCheckAttempts=0
+                    providerAcceptedBill=false
                     observingProviderResult=true
                     providerResultNoticeShown=false
                     state.text="Provider "+action+" button pressed once. Checking Faseyha response. Do not retry."
@@ -959,21 +961,26 @@ class FaseyhaAssistActivity : Activity() {
                     // Processing is not a final result. Continue observing without resubmitting.
                     if(attempt==0 || attempt==10 || attempt==25)
                         state.text="Faseyha is processing. Waiting for a final result; do not retry."
-                    if(attempt==7) startInternalWalletCheck()
+                    // Wait for the provider's rendered receipt before checking Wallet.
                     web.postDelayed({checkProviderResult(attempt+1)},1100)
                 } else if(classification!="Unknown"){
                     observingProviderResult=false
                     providerResultNoticeShown=true
-                    val providerMessage=result.optString("message").take(350)
-                    state.text="Faseyha response: $classification. Verify the provider transaction in Wallet."
                     if(classification=="Provider reported success" || classification=="Provider accepted payment") {
-                        state.text="Faseyha accepted the request. Verifying final Wallet status without resubmitting."
-                        web.postDelayed({if(!isFinishing)startInternalWalletCheck()},800)
+                        providerAcceptedBill=serviceIndex==2
+                        state.text=if(providerAcceptedBill)
+                            "Bill payment submitted successfully to Faseyha for "+
+                                pendingPaymentRecipient.orEmpty()+", MVR "+
+                                pendingPaymentAmount.orEmpty()+". Checking final status."
+                            else "Request received by Faseyha. Checking final status."
+                        // Give the provider's result page time to finish rendering.
+                        web.postDelayed({if(!isFinishing)startInternalWalletCheck()},2500)
                     }else {
-                        AlertDialog.Builder(this).setTitle("Faseyha response — $classification")
-                            .setMessage("Provider displayed:\n$providerMessage\n\nCheck Wallet and receipt before retrying. A website response alone is not proof of delivery.")
-                            .setPositiveButton("Check Wallet internally"){_,_->startInternalWalletCheck()}
-                            .setNegativeButton("Close",null).show()
+                        state.text=when(classification){
+                            "Insufficient balance"->"Insufficient wallet balance. Payment could not be completed."
+                            "Failed"->"Faseyha reported that the payment failed. Check history before trying again."
+                            else->"Faseyha could not complete the request. Check history before trying again."
+                        }
                     }
                 }else web.postDelayed({checkProviderResult(attempt+1)},900)
             }catch(_:Exception){
@@ -989,7 +996,9 @@ class FaseyhaAssistActivity : Activity() {
         if (walletCheckActive) return
         walletCheckActive=true
         walletCheckStartedAt=System.currentTimeMillis()
-        state.text="Your request was submitted. Verifying transaction in Faseyha Wallet. Please wait."
+        state.text=if(providerAcceptedBill)
+            "Bill payment submitted successfully. Checking final Wallet status."
+            else "Checking your transaction status."
         walletVerifier.loadUrl("https://faseyha.net/wallet")
     }
 
@@ -1073,7 +1082,9 @@ class FaseyhaAssistActivity : Activity() {
                     if(isMatchingWalletCandidate(row))matches.add(row)
                 }
                 if(matches.size>1){
-                    state.text="Several recent transactions match. Automatic verification is uncertain. Check receipts before retrying."
+                    state.text=if(providerAcceptedBill)
+                        "Faseyha accepted your bill payment. Multiple Wallet entries matched, so final status needs review."
+                        else "Multiple recent transactions match. Please check Wallet before trying again."
                     walletCheckActive=false
                     walletCheckComplete=true
                 }else if(matches.size==1){
@@ -1085,8 +1096,11 @@ class FaseyhaAssistActivity : Activity() {
                     }else {
                         // A unique wallet row without a matching recipient receipt
                         // is suggestive, but not proof of this specific recipient.
-                        state.text="Faseyha Wallet shows a recent "+matches.first().optString("status")+
-                            " charge matching the service and amount. Recipient not verified; review receipt."
+                        val status=matches.first().optString("status")
+                        state.text=if(providerAcceptedBill)
+                            "Bill payment submitted successfully. Wallet status: $status. "+
+                                "Receipt details are not available to confirm the recipient."
+                            else "Wallet status: $status. Recipient receipt is not available; review history."
                         walletCheckActive=false
                         walletCheckComplete=true
                     }
@@ -1166,16 +1180,19 @@ class FaseyhaAssistActivity : Activity() {
                     walletCheckComplete=true
                     observingProviderResult=false
                     val status=candidate.optString("status")
-                    state.text="Faseyha Wallet verification: $status. "+
-                        "Service: "+serviceChoices[selectedServiceChoice]+
-                        ". Recipient: "+pendingPaymentRecipient.orEmpty()+
-                        ". MVR "+expected+". Reference: "+reference+
-                        ". This confirms the provider record, not network delivery."
+                    state.text=(if(status.equals("Successful",true)||status.equals("Completed",true))
+                        "Payment successful in Faseyha Wallet. "
+                        else "Wallet status: $status. ")+
+                        serviceChoices[selectedServiceChoice]+", "+
+                        pendingPaymentRecipient.orEmpty()+", MVR "+expected+"."
                 }else {
                     walletCheckActive=false
                     walletCheckComplete=true
-                    state.text="Wallet has a recent matching charge, but the recipient or receipt could not be verified. "+
-                        "Status uncertain for this recipient; do not retry before reviewing history."
+                    val status=candidate.optString("status")
+                    state.text=if(providerAcceptedBill)
+                        "Bill payment submitted successfully. Wallet shows $status, but the "+
+                            "receipt could not confirm the recipient. Check details before paying again."
+                        else "Wallet shows $status, but the recipient could not be confirmed. Check history."
                 }
             }catch (_:Exception){scheduleWalletRetry()}
         }
@@ -1189,10 +1206,14 @@ class FaseyhaAssistActivity : Activity() {
         if(walletCheckAttempts>=7 || System.currentTimeMillis()-walletCheckStartedAt>90000L){
             walletCheckActive=false
             walletCheckComplete=true
-            state.text="No matching recent Faseyha Wallet receipt could be verified. Status unknown. "+
-                "Review Wallet before making another payment."
+            state.text=if(providerAcceptedBill)
+                "Bill payment submitted successfully to Faseyha. Final Wallet confirmation is not available yet. "+
+                    "Please check history before making another payment."
+                else "Final transaction status is not available. Please check Wallet before trying again."
         }else {
-            state.text="Checking transaction history. No verified result yet; do not retry."
+            state.text=if(providerAcceptedBill)
+                "Bill payment submitted. Checking Wallet status."
+                else "Checking transaction status."
             walletVerifier.postDelayed({
                 if(walletCheckActive && !isFinishing)
                     walletVerifier.loadUrl("https://faseyha.net/wallet")
