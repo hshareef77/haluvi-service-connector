@@ -734,7 +734,9 @@ class FaseyhaAssistActivity : Activity() {
             const text=document.body.innerText||'',i=text.toLowerCase().lastIndexOf('order summary');
             const summary=i<0?'':clean(text.slice(i,i+900));
             if(priorSummary && priorSummary!==summary) return JSON.stringify({ok:false,reason:'Order summary changed'});
-            if(!new RegExp('(^|\\D)'+recipient+'(\\D|$)').test(summary||text))
+            // Quick Pay displays recipient in an input, not body.innerText.
+            // For bill payments the exact value is independently checked below.
+            if(action!=='Pay' && !new RegExp('(^|\\D)'+recipient+'(\\D|$)').test(summary||text))
                 return JSON.stringify({ok:false,reason:'Recipient not confirmed'});
             const visible=x=>x.getClientRects().length>0 && getComputedStyle(x).visibility!=='hidden';
             const tabs=Array.from(document.querySelectorAll('button,[role="tab"],[role="radio"],[role="button"]'))
