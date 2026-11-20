@@ -92,7 +92,10 @@ class FaseyhaWalletActivity : Activity() {
     override fun onResume() {
         super.onResume()
         if (!resumedOnce) { resumedOnce = true; return }
-        if (signedOut) { signedOut = false; refresh() }
+        if (signedOut) { signedOut = false; refresh(); return }
+        // Receipts read by the payment screen meanwhile.
+        receiptCache.putAll(FaseyhaReceipts.all(this))
+        if (records.isNotEmpty() && !screen.isWebShown) { render(); checkRequested() }
     }
 
     // ---------- page loading ----------
@@ -297,6 +300,9 @@ class FaseyhaWalletActivity : Activity() {
             if (d != null && selected.first.equals(d.optString("reference"), true)) {
                 receiptCache[selected.first] = d
                 FaseyhaReceipts.put(this, selected.first, d)
+                // Show each receipt's recipient and amount as soon as it is read.
+                if (!screen.isWebShown) render()
+                checkRequested()
             }
             finishAutomaticReceipt()
         }

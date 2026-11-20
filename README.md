@@ -1,5 +1,9 @@
 # Haluvi Service Connector
 
+## v2.28 Wallet list updates as receipts are read
+
+Confirmed on the phone with 2.27: Dhiraagu Reload, Ooredoo Raastas, Dhiraagu Bill Pay and Ooredoo Bill Pay complete end to end. The Wallet screen now shows each entry's recipient and amount as soon as its receipt is read, instead of after the whole batch, and picks up receipts already read by the payment screen when you return to it.
+
 ## v2.27 reference added after late Wallet listing
 
 Recharge and Raastas: Faseyha's "Confirm recharge" dialog keeps its buttons in a separate bar. The app read only that bar, found no number or amount, and stopped with "Faseyha's confirmation shows different details" (nothing was paid). It now reads the whole dialog, checks operator, number and "Total to pay" there (never the page behind it), and presses "Confirm & recharge" once.
