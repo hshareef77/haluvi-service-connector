@@ -5,7 +5,7 @@ plugins {
 android {
     namespace = "mv.haluvi.serviceconnector"
     compileSdk = 35
-    defaultConfig { applicationId = "mv.haluvi.serviceconnector"; minSdk = 26; targetSdk = 35; versionCode = 36; versionName = "2.23" }
+    defaultConfig { applicationId = "mv.haluvi.serviceconnector"; minSdk = 26; targetSdk = 35; versionCode = 37; versionName = "2.24" }
 
     val keyStorePath = System.getenv("ANDROID_KEYSTORE_PATH")
     if (!keyStorePath.isNullOrBlank()) {
@@ -23,4 +23,7 @@ android {
     }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     kotlinOptions { jvmTarget = "17" }
+}
+dependencies {
+    testImplementation("junit:junit:4.13.2")
 }

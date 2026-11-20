@@ -3,530 +3,352 @@ package mv.haluvi.serviceconnector
 import android.app.Activity
 import android.app.AlertDialog
 import android.os.Bundle
-import android.net.Uri
 import android.view.View
-import android.view.ViewGroup
-import android.webkit.CookieManager
-import android.webkit.WebView
-import android.webkit.WebChromeClient
-import android.webkit.WebResourceRequest
-import android.webkit.WebViewClient
-import android.widget.*
+import android.widget.Button
+import android.widget.LinearLayout
+import android.widget.TextView
 import org.json.JSONArray
 import org.json.JSONObject
 
-/** Read-only, best-effort rendering of provider wallet history. No API credentials captured. */
+/**
+ * Native Faseyha Wallet: balance, Recharges/Payments history, receipt details and,
+ * when opened from a payment, a check for that payment. A hidden, read-only
+ * Faseyha page supplies the data; it never presses a payment control.
+ */
 class FaseyhaWalletActivity : Activity() {
-    private lateinit var web:WebView
-    private lateinit var state:TextView
-    private lateinit var balanceView:TextView
-    private lateinit var list:LinearLayout
-    private lateinit var selector:Button
-    private var category="Recharges"
-    private var limit=50
-    private var busy=false
-    private var autoLoads=0
-    private var previousAutoCount=-1
-    private var receiptReference: String? = null
-    private var receiptReturnToWallet = false
-    private val receiptCache = mutableMapOf<String,JSONObject>()
-    private lateinit var receiptWeb:WebView
-    private val receiptQueue=ArrayDeque<Pair<String,String>>()
-    private var automaticReceiptReads=0
-    private var receiptBusy=false
-    private var verificationAnnounced=false
-    private var verificationScans=0
-    private val verifyStartedAt by lazy { intent.getLongExtra("verify_started_at",0L) }
-    private val verifyPackage by lazy { intent.getStringExtra("verify_package").orEmpty().trim() }
-    private val receiptBatchLimit=30
-    private val verifyRecipient by lazy { intent.getStringExtra("verify_recipient").orEmpty().trim() }
-    private val verifyAmount by lazy { intent.getStringExtra("verify_amount").orEmpty().trim() }
-    private val verifyOperator by lazy { intent.getStringExtra("verify_operator").orEmpty().trim() }
-    private val verifyService by lazy { intent.getStringExtra("verify_service").orEmpty().trim() }
-    private lateinit var advanced: LinearLayout
-    private val records=linkedMapOf<String,JSONObject>()
-    private val buttonHeight:Int get()=(56*resources.displayMetrics.density).toInt()
+    companion object {
+        const val VERIFY_SERVICE = "verify_service_index"
+        const val VERIFY_RECIPIENT = "verify_recipient"
+        const val VERIFY_AMOUNT = "verify_amount"
+        const val VERIFY_STARTED_AT = "verify_started_at"
+        private const val RECEIPT_BATCH = 30
+    }
 
-    override fun onCreate(savedInstanceState:Bundle?) {
+    private lateinit var screen: EngineScreen
+    private lateinit var page: FaseyhaEngine
+    private lateinit var receipts: FaseyhaEngine
+    private lateinit var balanceText: TextView
+    private lateinit var status: TextView
+    private lateinit var categoryButton: Button
+    private lateinit var list: LinearLayout
+
+    private var category = "Recharges"
+    private var limit = 50
+    private var busy = false
+    private var autoLoads = 0
+    private var previousCount = -1
+    private val records = linkedMapOf<String, JSONObject>()
+    private lateinit var receiptCache: MutableMap<String, JSONObject>
+    private val receiptQueue = ArrayDeque<Pair<String, String>>()
+    private var automaticReads = 0
+    private var receiptBusy = false
+    private var manualReceipt: String? = null
+    private var signedOut = false
+    private var signInPrompted = false
+    private var resumedOnce = false
+
+    private val verifyService by lazy { FaseyhaRules.SERVICES.getOrNull(intent.getIntExtra(VERIFY_SERVICE, -1)) }
+    private val verifyRecipient by lazy { intent.getStringExtra(VERIFY_RECIPIENT).orEmpty() }
+    private val verifyAmount by lazy { FaseyhaRules.money(intent.getStringExtra(VERIFY_AMOUNT)) }
+    private val verifyStartedAt by lazy { intent.getLongExtra(VERIFY_STARTED_AT, 0L) }
+    private var verificationAnnounced = false
+
+    override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        loadVerifiedReceipts()
-        val root=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL;setPadding(20,12,20,12)}
-        root.addView(TextView(this).apply{text="Faseyha Wallet";textSize=23f
-            if(android.os.Build.VERSION.SDK_INT>=28)isAccessibilityHeading=true})
-        balanceView=TextView(this).apply{text="Balance: loading…";textSize=20f;accessibilityLiveRegion=View.ACCESSIBILITY_LIVE_REGION_POLITE}
-        root.addView(balanceView)
-        state=TextView(this).apply{text="Opening Wallet...";textSize=17f;accessibilityLiveRegion=View.ACCESSIBILITY_LIVE_REGION_POLITE}
-        root.addView(state)
-        fun add(label:String,fn:()->Unit)=root.addView(Button(this).apply{text=label;minHeight=buttonHeight;setOnClickListener{fn()}})
-        selector=Button(this).apply{text="Category: Recharges. Change";minHeight=buttonHeight;setOnClickListener{chooseCategory()}}
-        root.addView(selector)
-        add("Refresh transactions"){autoLoads=0;previousAutoCount=-1;records.clear();list.removeAllViews();web.loadUrl("https://faseyha.net/wallet")}
-        add("Load older transactions"){loadMore()}
-        advanced=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL;visibility=View.GONE}
-        root.addView(Button(this).apply{text="Advanced wallet controls";minHeight=buttonHeight;setOnClickListener{
-            advanced.visibility=if(advanced.visibility==View.GONE)View.VISIBLE else View.GONE
-            text=if(advanced.visibility==View.GONE)"Advanced wallet controls" else "Hide advanced wallet controls"
-        }})
-        root.addView(advanced)
-        fun diagnostic(label:String,fn:()->Unit)=advanced.addView(Button(this).apply{text=label;minHeight=buttonHeight;setOnClickListener{fn()}})
-        diagnostic("Retrieve displayed transactions"){scan()}
-        diagnostic("Maximum records"){chooseLimit()}
-        diagnostic("Close Wallet"){finish()}
-        diagnostic("Open dashboard"){web.loadUrl("https://faseyha.net/dashboard")}
-        diagnostic("Open wallet website"){web.loadUrl("https://faseyha.net/wallet")}
-        list=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL}
-        root.addView(list)
-        root.addView(TextView(this).apply{text="Provider website, for sign-in and original receipt viewing:"})
-        web=WebView(this).apply {
-            settings.javaScriptEnabled=true
-            settings.domStorageEnabled=true
-            settings.allowFileAccess=false
-            settings.allowContentAccess=false
-            webChromeClient=WebChromeClient()
-            webViewClient=object:WebViewClient(){
-                override fun shouldOverrideUrlLoading(view:WebView,request:WebResourceRequest):Boolean{
-                    val u=request.url
-                    if(u.scheme!="https" || !trusted(u.host)){state.text="Unsupported website navigation blocked.";return true}
-                    return false
-                }
-                override fun onPageFinished(view:WebView,url:String){
-                    CookieManager.getInstance().flush()
-                    if(wallet())web.postDelayed({if(wallet())selectCategory{scan()}},350)
-                    else if(Uri.parse(url).path?.startsWith("/invoice/")==true) {
-                        web.postDelayed({inspectReceipt()},300)
-                    } else state.text="Provider page opened: "+(Uri.parse(url).path?:"/")
-                }
+        receiptCache = FaseyhaReceipts.all(this)
+        screen = EngineScreen(this, "Faseyha Wallet")
+        balanceText = screen.text("Balance: loading…", 20f, live = true)
+        status = screen.text("Opening Wallet…", 17f, live = true)
+        categoryButton = screen.button("Category: Recharges. Change") { chooseCategory() }
+        screen.button("Refresh") { refresh() }
+        screen.button("Load older transactions") { loadMore() }
+        lateinit var moreToggle: Button
+        lateinit var more: LinearLayout
+        moreToggle = screen.button("More options") {
+            more.visibility = if (more.visibility == View.GONE) View.VISIBLE else View.GONE
+            moreToggle.text = if (more.visibility == View.VISIBLE) "Hide more options" else "More options"
+        }
+        more = screen.section()
+        screen.button("Show Wallet page", more) { screen.showWeb(page, "Faseyha Wallet page") }
+        lateinit var limitButton: Button
+        limitButton = screen.button("Maximum records: $limit", more) { chooseLimit(limitButton) }
+        screen.button("Open Faseyha website", more) { openFaseyhaWebsite("/wallet") }
+        list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        screen.panel.addView(list)
+
+        page = FaseyhaEngine(this) { onPageLoaded(it) }
+        receipts = FaseyhaEngine(this) { onReceiptLoaded(it) }
+        screen.attach(receipts)
+        screen.attach(page)
+        screen.onNativeShown = {
+            manualReceipt = null
+            render()
+            if (page.path != "/wallet") page.open("/wallet")
+        }
+        setContentView(screen.root)
+        page.open("/wallet")
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (!resumedOnce) { resumedOnce = true; return }
+        if (signedOut) { signedOut = false; refresh() }
+    }
+
+    // ---------- page loading ----------
+
+    private fun onPageLoaded(url: String) {
+        val path = FaseyhaSite.pathOf(url)
+        when {
+            path == "/wallet" -> page.after(350) { selectCategory { scan() } }
+            FaseyhaSite.isReceiptUrl(url) -> page.after(300) { inspectManualReceipt() }
+            else -> page.eval(FaseyhaSite.SIGNED_OUT) { r ->
+                if (r?.optBoolean("signedOut") == true || path == null) handleSignedOut()
+                else status.text = "Faseyha opened ${path} instead of Wallet."
             }
         }
-        CookieManager.getInstance().setAcceptCookie(true)
-        root.addView(web,LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,(330*resources.displayMetrics.density).toInt()))
-        receiptWeb=WebView(this).apply {
-            settings.javaScriptEnabled=true
-            settings.domStorageEnabled=true
-            settings.allowFileAccess=false
-            settings.allowContentAccess=false
-            webViewClient=object:WebViewClient(){
-                override fun shouldOverrideUrlLoading(view:WebView,request:WebResourceRequest):Boolean {
-                    return request.url.scheme!="https" || !trusted(request.url.host)
-                }
-                override fun onPageFinished(view:WebView,url:String){
-                    val u=Uri.parse(url)
-                    if(u.scheme=="https" && trusted(u.host) && u.path?.startsWith("/invoice/")==true)
-                        view.postDelayed({ inspectAutomaticReceipt() },500)
-                    else finishAutomaticReceipt()
-                }
-            }
-        }
-        root.addView(receiptWeb,LinearLayout.LayoutParams(1,1))
-        setContentView(ScrollView(this).apply{addView(root)})
-        web.loadUrl("https://faseyha.net/wallet")
     }
-    private fun trusted(h:String?)=h=="faseyha.net" || h?.endsWith(".faseyha.net")==true
-    private fun wallet():Boolean{
-        val u=Uri.parse(web.url?:"")
-        return u.scheme=="https" && trusted(u.host) && u.path=="/wallet"
+
+    private fun refresh() {
+        autoLoads = 0; previousCount = -1; busy = false
+        records.clear(); list.removeAllViews()
+        status.text = "Refreshing Wallet…"
+        page.open("/wallet")
     }
-    private fun message(text:String){AlertDialog.Builder(this).setMessage(text).setPositiveButton("OK",null).show()}
-    private fun decode(raw:String):JSONObject?=try{JSONObject(JSONArray("[$raw]").getString(0))}catch(_:Exception){null}
-    private fun chooseCategory(){
-        val options=arrayOf("Recharges","Payments")
-        AlertDialog.Builder(this).setTitle("Wallet category, currently "+category)
-            .setSingleChoiceItems(options,if(category=="Recharges")0 else 1){dialog,i->
+
+    private fun chooseCategory() {
+        val options = arrayOf("Recharges", "Payments")
+        AlertDialog.Builder(this).setTitle("Wallet category")
+            .setSingleChoiceItems(options, options.indexOf(category)) { dialog, i ->
                 dialog.dismiss()
-                category=options[i]
-                selector.text="Category: "+category+". Change"
-                selector.contentDescription="Wallet category selected: "+category+". Double tap to change"
-                autoLoads=0;previousAutoCount=-1;records.clear();list.removeAllViews()
-                if(wallet())selectCategory{scan()} else web.loadUrl("https://faseyha.net/wallet")
-            }.setNegativeButton("Cancel",null).show()
+                category = options[i]
+                categoryButton.text = "Category: $category. Change"
+                categoryButton.contentDescription = "Wallet category, selected $category. Double tap to change."
+                autoLoads = 0; previousCount = -1
+                records.clear(); list.removeAllViews()
+                if (page.path == "/wallet") selectCategory { scan() } else page.open("/wallet")
+            }.setNegativeButton("Cancel", null).show()
     }
-    private fun selectCategory(after:()->Unit){
-        if(!wallet()){state.text="Open Wallet before selecting a category.";return}
-        val js="""(function(wanted){
-          const tidy=x=>(x||'').replace(/\s+/g,' ').trim().toLowerCase();
-          const matches=Array.from(document.querySelectorAll('button,[role="tab"],[role="button"]'))
-            .filter(x=>x.getClientRects().length && !x.disabled)
-            .filter(x=>tidy(x.innerText||x.getAttribute('aria-label'))===tidy(wanted));
-          if(matches.length!==1)return JSON.stringify({ok:false});
-          matches[0].click();return JSON.stringify({ok:true});
-        })(__CATEGORY__);""".replace("__CATEGORY__",JSONObject.quote(category))
-        web.evaluateJavascript(js){raw->
-            if(decode(raw)?.optBoolean("ok")==true)web.postDelayed({if(wallet())after()},350)
-            else state.text="Couldn't select "+category+" automatically. Choose it on Faseyha's website and select Retrieve displayed transactions."
-        }
-    }
-    private fun chooseLimit(){
-        val values=arrayOf(20,50,100,200,500)
+
+    private fun chooseLimit(button: Button) {
+        val values = arrayOf(20, 50, 100, 200, 500)
         AlertDialog.Builder(this).setTitle("Maximum transaction records")
-            .setSingleChoiceItems(values.map{"Latest "+it}.toTypedArray(),values.indexOf(limit)){d,i->
-                d.dismiss();limit=values[i];state.text="Limit: "+limit+". Refresh or Load older transactions to continue."
-            }.setNegativeButton("Cancel",null).show()
+            .setSingleChoiceItems(values.map { "Latest $it" }.toTypedArray(), values.indexOf(limit)) { d, i ->
+                d.dismiss()
+                limit = values[i]
+                button.text = "Maximum records: $limit"
+                status.text = "Showing up to $limit records. Use Load older transactions for more."
+            }.setNegativeButton("Cancel", null).show()
     }
-    private fun scan(){
-        if(!wallet()){state.text="Open Faseyha Wallet before retrieving transactions.";return}
-        val js="""(function(){
-          const pageText=document.body.innerText||'';
-          const balance=(pageText.match(/available\s+balance[\s\S]{0,90}?(\d[\d,.]*)(?:\s|$)/i)||[])[1]||'unknown';
-          const seen=new Set(),rows=[];
-          const trim=s=>(s||'').replace(/\s+/g,' ').trim();
-          const moneyPattern=/(?:MVR|Rf|ރ|ރ\.|MRf)?\s*([+-]?\s*\d[\d,]*(?:\.\d{1,2})?)/i;
-          const references=/\b(?:FR|BLA)[A-Z0-9]{8,40}\b/i;
-          const statusPattern=/\b(successful|completed|processing|pending|failed|submitted)\b/i;
-          const dates=/\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2}(?:,\s*|\s+)\d{1,2}:\d{2}\s*(?:AM|PM)\b/i;
-          // Find a single transaction container containing receipt, reference and status,
-          // rather than reading the receipt link's parent only.
-          const links=Array.from(document.querySelectorAll('a[href]'))
-            .filter(x=>/receipt|tax invoice/i.test(trim(x.innerText||x.getAttribute('aria-label'))) || /\/invoice\//i.test(x.href));
-          for(const a of links){
-            let item=null,ancestor=a;
-            for(let depth=0;ancestor&&depth<10;depth++,ancestor=ancestor.parentElement){
-              const text=trim(ancestor.innerText);
-              if(text.length<20||text.length>900)continue;
-              if(references.test(text)&&statusPattern.test(text)&&dates.test(text)){item=ancestor;break;}
+
+    private fun selectCategory(after: () -> Unit) {
+        page.eval(FaseyhaSite.walletTab(category)) { r ->
+            if (r?.optBoolean("ok") == true) page.after(350) { if (page.path == "/wallet") after() }
+            else status.text = "Couldn't open the $category tab automatically. Use Show Wallet page to check Faseyha."
+        }
+    }
+
+    private fun scan() {
+        page.eval(FaseyhaSite.WALLET_SCAN) { r ->
+            if (r == null) { status.text = "Faseyha's Wallet could not be read. Try Refresh."; return@eval }
+            if (r.optBoolean("signedOut")) { handleSignedOut(); return@eval }
+            val rows = r.optJSONArray("rows") ?: JSONArray()
+            for (i in 0 until rows.length()) {
+                val row = rows.optJSONObject(i) ?: continue
+                val key = row.optString("reference").ifBlank { row.optString("url") }
+                if (key.isNotBlank() && (records.containsKey(key) || records.size < limit)) records[key] = row
             }
-            if(!item)continue;
-            const text=trim(item.innerText);
-            const reference=(text.match(references)||[])[0]||'';
-            if(!reference||seen.has(reference))continue;
-            seen.add(reference);
-            const status=(text.match(statusPattern)||[])[1]||'Not shown';
-            const date=(text.match(dates)||[])[0]||'';
-            const first=text.indexOf(reference);
-            const service=trim(first>=0?text.slice(0,first):'').slice(0,100)||'Unknown service';
-            // Do not mistake FRF6591... reference characters for "Rf 6591".
-            // Only accept a clearly labeled currency amount, never nearby digits.
-            const leaves=Array.from(item.querySelectorAll('*'))
-              .filter(x=>x.getClientRects().length && x.children.length===0)
-              .map(x=>trim(x.textContent)).filter(x=>x.length && x.length<45);
-            const currency=/^(?:MVR|MRf|Rf|ރ\.?)[ ]*([+-]?[ ]*[\d,]+(?:\.\d{1,2})?)$/i;
-            const amounts=leaves.map(x=>x.match(currency)).filter(Boolean)
-              .map(x=>x[1].replace(/[^0-9.,]/g,'')).filter(Boolean);
-            let price=amounts.length===1?amounts[0]:'';
-            if(!price){
-              const withoutRef=text.replace(reference,' ');
-              const labeled=withoutRef.match(/(?:^|[^A-Za-z0-9])(?:MVR|MRf|Rf|ރ\.?)[ ]*([+-]?[ ]*[\d,]+(?:\.\d{1,2})?)(?![A-Za-z0-9])/i);
-              if(labeled)price=labeled[1].replace(/[^0-9.,]/g,'');
-            }
-            let url='';
-            try{const u=new URL(a.href);if(u.protocol==='https:'&&(u.hostname==='faseyha.net'||u.hostname.endsWith('.faseyha.net')))url=u.href}catch(e){}
-            rows.push({reference:reference,status:status,service:service,date:date,price:price,
-                description:text.slice(0,550),url:url});
-          }
-          const more=Array.from(document.querySelectorAll('button,[role="button"]'))
-            .some(x=>x.getClientRects().length && /^load more$/i.test(trim(x.innerText||x.getAttribute('aria-label'))));
-          return JSON.stringify({balance:balance,rows:rows.slice(0,500),more:more});
-        })();"""
-        web.evaluateJavascript(js){raw->
-            val obj=decode(raw)
-            if(obj==null){state.text="Unable to parse Faseyha's history. Review the provider website.";return@evaluateJavascript}
-            val rows=obj.optJSONArray("rows")?:JSONArray()
-            for(i in 0 until rows.length()){
-                val row=rows.optJSONObject(i)?:continue
-                val key=row.optString("reference").ifBlank{row.optString("url")}
-                if(key.isNotBlank()&&records.size<limit)records[key]=row
-            }
-            balanceView.text="Balance: MVR "+obj.optString("balance","unknown")
-            state.text=category+": "+records.size+" transactions"+(if(obj.optBoolean("more"))". More available." else ".")
-            list.removeAllViews()
-            if(category=="Recharges") enqueueMissingReceipts()
-            if(records.isEmpty())list.addView(TextView(this).apply{
-                text="No transactions found. Refresh or check the Faseyha website."
-            })
-            records.values.forEach{row->
-                val service=row.optString("service","Unknown service")
-                val wholesale=service.contains("wholesale",true)
-                val kind=if(category=="Payments")"Wallet deposit" else ""
-                val date=row.optString("date","Date not identified")
-                val price=verifiedAmount(row)
-                val status=row.optString("status","Not shown")
-                val details=receiptCache[row.optString("reference")]
-                val account=details?.optString("account")?.takeIf{it.isNotBlank()} ?: ""
-                val summary=(if(kind.isNotBlank())"$kind. " else "") + "$service. "+
-                    (if(account.isNotBlank())"$account. " else "Recipient not identified. ")+
-                    (if(price=="Not available")"Amount not available. " else "MVR $price. ")+
-                    "$status. $date."
-                list.addView(Button(this).apply{
-                    minHeight=buttonHeight
-                    text="$summary View details"
-                    contentDescription="$summary View details and transaction reference."
-                    setOnClickListener{detail(row,kind)}
-                })
-            }
-            checkRequestedTransaction()
-            if(obj.optBoolean("more") && records.size<limit && autoLoads<6 && records.size>previousAutoCount) {
-                previousAutoCount=records.size
+            val balance = FaseyhaRules.money(r.optString("balance"))
+            balanceText.text = balance?.let { "Balance: MVR ${FaseyhaRules.format(it)}" } ?: "Balance: not shown"
+            status.text = "$category: ${records.size} transactions" + if (r.optBoolean("more")) ". Older ones available." else "."
+            render()
+            if (category == "Recharges") enqueueMissingReceipts()
+            checkRequested()
+            if (r.optBoolean("more") && records.size < limit && autoLoads < 6 && records.size > previousCount) {
+                previousCount = records.size
                 autoLoads++
-                web.postDelayed({ if(wallet() && !busy && records.size<limit) loadMore() },700)
-            }
-        }
-    }
-    private fun normalizedMoney(value:String):String? {
-        return try {
-            java.math.BigDecimal(value.replace(",", "").trim()).setScale(2).toPlainString()
-        } catch (_:Exception) { null }
-    }
-    // Returns a recent timestamp only when the wallet's displayed date is
-    // parseable. Never use an undated/older entry as proof of a new charge.
-    private fun recentWalletEntry(date:String):Boolean {
-        if(verifyStartedAt<=0L) return false
-        return try {
-            val parser=java.text.SimpleDateFormat("MMM d, h:mm a",java.util.Locale.ENGLISH)
-            parser.isLenient=false
-            val parsed=parser.parse(date.replace(Regex("\\s+")," ").trim()) ?: return false
-            val now=java.util.Calendar.getInstance()
-            val calendar=java.util.Calendar.getInstance().apply {
-                time=parsed
-                set(java.util.Calendar.YEAR,now.get(java.util.Calendar.YEAR))
-            }
-            if(calendar.timeInMillis>System.currentTimeMillis()+24*60*60*1000L)
-                calendar.add(java.util.Calendar.YEAR,-1)
-            val difference=calendar.timeInMillis-verifyStartedAt
-            // Allow the provider clock a small offset; reject old transactions.
-            difference in -2*60*1000L..30*60*1000L
-        } catch (_:Exception) { false }
-    }
-
-    private fun normalizedRecipient(text:String)=text.replace(Regex("[^A-Za-z0-9]"),"")
-        .removePrefix("960").uppercase(java.util.Locale.ROOT)
-
-    private fun checkRequestedTransaction() {
-        if(verificationAnnounced || category!="Recharges" || verifyRecipient.isBlank() ||
-            verifyOperator.isBlank() || verifyService.isBlank()) return
-        val requestedAmount=normalizedMoney(verifyAmount)
-        // Package total is provider-generated, and must be corroborated by the receipt
-        // and a distinct recent wallet entry, not guessed from displayed package prices.
-        if(requestedAmount==null && verifyService!="Package Recharge")return
-        val possible=records.values.filter { row ->
-            val service=row.optString("service")
-            if(service.contains("wholesale",true) ||
-               !service.contains(verifyOperator,true) ||
-               !recentWalletEntry(row.optString("date")))return@filter false
-            val serviceMatch=when(verifyService) {
-                "Recharge" -> service.contains("reload",true) || service.contains("raastas",true) ||
-                    (service.contains("recharge",true) && !service.contains("package",true))
-                "Package Recharge" -> service.contains("package",true) || service.contains("data",true)
-                else -> service.contains("bill",true)
-            }
-            if(!serviceMatch)return@filter false
-            val receipt=receiptCache[row.optString("reference")] ?: return@filter false
-            val account=normalizedRecipient(receipt.optString("account"))
-            val amount=normalizedMoney(row.optString("price"))
-                ?: normalizedMoney(receipt.optString("amount"))
-            account.isNotBlank() && account==normalizedRecipient(verifyRecipient) &&
-                amount!=null && (requestedAmount==null || amount==requestedAmount) &&
-                (verifyService!="Package Recharge" || verifyPackage.isBlank() ||
-                    receipt.optString("description").contains(verifyPackage,true) ||
-                    service.contains("package",true))
-        }
-        if(possible.size==1) {
-            val row=possible.first()
-            val status=row.optString("status","Unknown")
-            val ref=row.optString("reference")
-            val proof=receiptCache[ref]
-            verificationAnnounced=true
-            state.text="Matching recent Wallet transaction. Provider status: $status."
-            AlertDialog.Builder(this).setTitle("Faseyha transaction verification")
-                .setMessage("Service: "+row.optString("service")+
-                    "\nRecipient: "+verifyRecipient+
-                    "\nAmount: MVR "+row.optString("price").ifBlank{proof?.optString("amount").orEmpty()}+
-                    "\nWallet status: "+status+
-                    "\nReference: "+ref+
-                    "\n\nThis verifies Faseyha's matching recent transaction, not independently mobile delivery.")
-                .setPositiveButton("OK",null).show()
-        }else if(possible.size>1){
-            verificationAnnounced=true
-            state.text="Multiple recent provider transactions match. Open their receipts and compare references; automatic confirmation withheld."
-        }else if(!receiptBusy && receiptQueue.isEmpty() && automaticReceiptReads>0){
-            state.text="No uniquely verified recent transaction yet. Check the latest Wallet entry and receipt before attempting another payment."
-        }
-    }
-
-    private fun verifiedAmount(row:JSONObject):String {
-        // Receipt details are stored only after the reference matches.
-        val verified=receiptCache[row.optString("reference")]?.optString("amount").orEmpty()
-        return verified.ifBlank { row.optString("price").ifBlank { "Not available" } }
-    }
-    private fun detail(row:JSONObject,kind:String){
-        val ref=row.optString("reference")
-        val extra=receiptCache[ref]
-        val u=Uri.parse(row.optString("url"))
-        val account=extra?.optString("account").orEmpty().ifBlank{"Not identified"}
-        val price=verifiedAmount(row)
-        val receiptStatus=extra?.optString("status").orEmpty()
-        val detailText="Service: "+row.optString("service")+
-            "\nRecipient: "+account+
-            (if(price=="Not available")"\nAmount: Not available" else "\nAmount: MVR "+price)+
-            "\nStatus: "+row.optString("status")+
-            (if(receiptStatus.isNotBlank())"\nReceipt: "+receiptStatus else "")+
-            "\nDate: "+row.optString("date")+
-            "\nReference: "+ref
-        AlertDialog.Builder(this).setTitle(row.optString("service").ifBlank{kind})
-            .setMessage(detailText)
-            .setPositiveButton("Open provider receipt"){_,_->
-                if(u.scheme=="https"&&trusted(u.host)){
-                    receiptReference=ref
-                    web.loadUrl(u.toString())
-                }else message("No safe same-site receipt URL was found.")
-            }.setNegativeButton("Close",null).show()
-    }
-    private fun inspectReceipt() {
-        val uri=Uri.parse(web.url?:"")
-        if(uri.scheme!="https" || !trusted(uri.host) || uri.path?.startsWith("/invoice/")!=true)return
-        val ref=receiptReference
-        val js="""(function(){
-          const text=(document.body.innerText||'');
-          const norm=s=>(s||'').replace(/\s+/g,' ').trim();
-          const receipt=(text.match(/receipt\s*(?:no\.?|number)\s*:?\s*([A-Z0-9]{8,45})/i)||[])[1]||'';
-          const paid=/\bpaid in full\b/i.test(text)?'Paid in full':'Not identified';
-          const total=text.match(/(?:total amount|amount paid)\s*(?:MVR|Rf|ރ|ރ\.)?\s*([\d,]+(?:\.\d{1,2})?)/i);
-          const service=(text.match(/description\s+([\s\S]{0,120}?)(?:total amount|amount paid)/i)||[])[1]||'';
-          const billTo=(text.match(/bill to\s+([A-Z0-9-]{5,32})/i)||[])[1]||'';
-          const candidates=(service.match(/\b[A-Z0-9-]{7,30}\b/gi)||[]).filter(x=>/\d/.test(x));
-          const account=candidates.find(x=>/^BB/i.test(x))||candidates[candidates.length-1]||billTo;
-          return JSON.stringify({reference:receipt,account:account,amount:total?total[1]:'',status:paid});
-        })();"""
-        web.evaluateJavascript(js){raw->
-            val parsed=decode(raw)
-            if(parsed==null){state.text="Could not inspect original Faseyha receipt.";return@evaluateJavascript}
-            val reported=parsed.optString("reference")
-            if(ref!=null && (reported.isBlank() || !ref.equals(reported,true))){
-                state.text="Receipt reference does not match selected history transaction. No data was merged."
-                return@evaluateJavascript
-            }
-            if(ref!=null){
-                receiptCache[ref]=parsed
-                saveVerifiedReceipts()
-                state.text="Receipt details retrieved for the selected transaction. Return to Wallet to view updated details."
-                AlertDialog.Builder(this).setTitle("Provider receipt details")
-                    .setMessage("Reference: "+ref+
-                        "\nRecipient: "+parsed.optString("account").ifBlank{"Not identified"}+
-                        "\nAmount: MVR "+parsed.optString("amount").ifBlank{"Not identified"}+
-                        "\nReceipt status: "+parsed.optString("status")+
-                        "")
-                    .setPositiveButton("Back to Wallet"){_,_->
-                        receiptReference=null
-                        web.loadUrl("https://faseyha.net/wallet")
-                    }.setNegativeButton("Remain on receipt",null).show()
+                page.after(700) { if (!busy && records.size < limit) loadMore() }
             }
         }
     }
 
+    private fun loadMore() {
+        if (page.path != "/wallet") { status.text = "Opening Wallet…"; page.open("/wallet"); return }
+        if (busy) { status.text = "Already loading."; return }
+        if (records.size >= limit) { status.text = "Reached the maximum of $limit records."; return }
+        busy = true
+        page.eval(FaseyhaSite.LOAD_MORE) { r ->
+            if (r?.optBoolean("ok") != true) { busy = false; status.text = "No older transactions are available." }
+            else page.after(900) { busy = false; if (page.path == "/wallet") scan() }
+        }
+    }
 
-    private fun loadVerifiedReceipts(){
-        val saved=getSharedPreferences("verified_faseyha_receipts",MODE_PRIVATE).getString("items","{}") ?: "{}"
-        try {
-            val obj=JSONObject(saved)
-            for(key in obj.keys()){
-                val data=obj.optJSONObject(key) ?: continue
-                if(key.equals(data.optString("reference"),true) && key.matches(Regex("[A-Za-z0-9]{8,45}")))
-                    receiptCache[key]=data
+    private fun handleSignedOut() {
+        signedOut = true
+        balanceText.text = "Balance: signed out"
+        status.text = "You are signed out of Faseyha. Choose Open Faseyha website under More options, sign in, then come back."
+        if (signInPrompted || isFinishing) return
+        signInPrompted = true
+        AlertDialog.Builder(this).setTitle("Sign in to Faseyha")
+            .setMessage("Faseyha needs you to sign in before the Wallet can be shown.")
+            .setPositiveButton("Open website") { _, _ -> openFaseyhaWebsite("/wallet") }
+            .setNegativeButton("Later", null).show()
+    }
+
+    // ---------- list and details ----------
+
+    private fun amountOf(row: JSONObject): String =
+        receiptCache[row.optString("reference")]?.optString("amount")?.ifBlank { null }
+            ?: row.optString("amount").ifBlank { "" }
+
+    private fun summaryOf(row: JSONObject): String {
+        val account = receiptCache[row.optString("reference")]?.optString("account").orEmpty()
+        val money = amountOf(row)
+        return (if (category == "Payments") "Wallet deposit. " else "") + row.optString("service", "Unknown service") + ". " +
+            (if (account.isNotBlank()) "$account. " else if (category == "Payments") "" else "Recipient not identified. ") +
+            (if (money.isBlank()) "Amount not shown. " else "MVR $money. ") +
+            row.optString("status", "Status not shown") + ". " + row.optString("date")
+    }
+
+    private fun render() {
+        list.removeAllViews()
+        if (records.isEmpty()) {
+            list.addView(TextView(this).apply { text = "No transactions found yet."; textSize = 16f })
+            return
+        }
+        records.values.forEach { row ->
+            val summary = summaryOf(row)
+            list.addView(Button(this).apply {
+                minHeight = screen.dp(56)
+                text = summary
+                contentDescription = "$summary. Double tap for details."
+                setOnClickListener { detail(row) }
+            })
+        }
+    }
+
+    private fun detail(row: JSONObject) {
+        val ref = row.optString("reference")
+        val receipt = receiptCache[ref]
+        val money = amountOf(row)
+        val text = "Service: " + row.optString("service") +
+            "\nRecipient: " + (receipt?.optString("account")?.ifBlank { null } ?: "Not identified") +
+            "\nAmount: " + (if (money.isBlank()) "Not shown" else "MVR $money") +
+            "\nStatus: " + row.optString("status") +
+            (receipt?.optString("status")?.takeIf { it.isNotBlank() }?.let { "\nReceipt: $it" } ?: "") +
+            "\nDate: " + row.optString("date") +
+            "\nReference: " + ref
+        val url = row.optString("url")
+        AlertDialog.Builder(this).setTitle(row.optString("service").ifBlank { "Transaction" })
+            .setMessage(text)
+            .apply {
+                if (FaseyhaSite.isReceiptUrl(url)) setPositiveButton("View original receipt") { _, _ ->
+                    manualReceipt = ref
+                    page.openUrl(url)
+                    screen.showWeb(page, "Faseyha receipt $ref")
+                }
             }
-        }catch(_:Exception){}
+            .setNegativeButton("Close", null).show()
     }
 
-    private fun saveVerifiedReceipts(){
-        val obj=JSONObject()
-        receiptCache.entries.toList().takeLast(500).forEach{(ref,data)->obj.put(ref,data)}
-        getSharedPreferences("verified_faseyha_receipts",MODE_PRIVATE)
-            .edit().putString("items",obj.toString()).apply()
+    private fun inspectManualReceipt() {
+        val ref = manualReceipt ?: return
+        page.eval(FaseyhaSite.RECEIPT_READ) { d ->
+            if (d == null || !ref.equals(d.optString("reference"), true)) return@eval
+            receiptCache[ref] = d
+            FaseyhaReceipts.put(this, ref, d)
+        }
     }
 
-    private fun enqueueMissingReceipts(){
-        if(receiptBusy || automaticReceiptReads>=receiptBatchLimit) return
-        val queued=receiptQueue.map{it.first}.toSet()
-        for((ref,row) in records){
-            if(receiptCache.containsKey(ref) || queued.contains(ref)) continue
-            val u=Uri.parse(row.optString("url"))
-            if(u.scheme!="https" || !trusted(u.host) || u.path?.startsWith("/invoice/")!=true)continue
-            receiptQueue.addLast(ref to u.toString())
-            if(receiptQueue.size>=receiptBatchLimit-automaticReceiptReads)break
+    // ---------- automatic receipt details ----------
+
+    private fun enqueueMissingReceipts() {
+        if (receiptBusy || automaticReads >= RECEIPT_BATCH) return
+        val queued = receiptQueue.map { it.first }.toSet()
+        for ((ref, row) in records) {
+            if (receiptCache.containsKey(ref) || ref in queued) continue
+            val url = row.optString("url")
+            if (!FaseyhaSite.isReceiptUrl(url)) continue
+            receiptQueue.addLast(ref to url)
+            if (receiptQueue.size >= RECEIPT_BATCH - automaticReads) break
         }
         startAutomaticReceipt()
     }
 
-    private fun startAutomaticReceipt(){
-        if(receiptBusy || receiptQueue.isEmpty() || automaticReceiptReads>=receiptBatchLimit) return
-        receiptBusy=true
-        automaticReceiptReads++
-        receiptWeb.loadUrl(receiptQueue.first().second)
+    private fun startAutomaticReceipt() {
+        if (receiptBusy || receiptQueue.isEmpty() || automaticReads >= RECEIPT_BATCH) return
+        receiptBusy = true
+        automaticReads++
+        receipts.openUrl(receiptQueue.first().second)
     }
 
-    private fun inspectAutomaticReceipt(){
-        val selected=receiptQueue.firstOrNull() ?: return
-        val js="""(function(){
-            const t=document.body.innerText||'';
-            const ref=(t.match(/receipt\s*(?:no\.?|number)\s*:?\s*([A-Z0-9]{8,45})/i)||[])[1]||'';
-            const amount=(t.match(/(?:total amount|amount paid)\s*(?:MVR|Rf|ރ|ރ\.)?\s*([\d,]+(?:\.\d{1,2})?)/i)||[])[1]||'';
-            const service=(t.match(/description\s+([\s\S]{0,120}?)(?:total amount|amount paid)/i)||[])[1]||'';
-            const billTo=(t.match(/bill to\s+([A-Z0-9-]{5,32})/i)||[])[1]||'';
-            const candidates=(service.match(/\b[A-Z0-9-]{7,30}\b/gi)||[]).filter(x=>/\d/.test(x));
-            const account=candidates.find(x=>/^BB/i.test(x))||candidates[candidates.length-1]||billTo;
-            return JSON.stringify({reference:ref,account:account,amount:amount,status:/\bpaid in full\b/i.test(t)?'Paid in full':'Not identified'});
-        })();"""
-        receiptWeb.evaluateJavascript(js){raw->
-            val obj=decode(raw)
-            if(obj!=null && selected.first.equals(obj.optString("reference"),true)){
-                receiptCache[selected.first]=obj
-                saveVerifiedReceipts()
+    private fun onReceiptLoaded(url: String) {
+        if (FaseyhaSite.isReceiptUrl(url)) receipts.after(500) { inspectAutomaticReceipt() } else finishAutomaticReceipt()
+    }
+
+    private fun inspectAutomaticReceipt() {
+        val selected = receiptQueue.firstOrNull() ?: return
+        receipts.eval(FaseyhaSite.RECEIPT_READ) { d ->
+            if (d != null && selected.first.equals(d.optString("reference"), true)) {
+                receiptCache[selected.first] = d
+                FaseyhaReceipts.put(this, selected.first, d)
             }
             finishAutomaticReceipt()
         }
     }
 
-    private fun finishAutomaticReceipt(){
-        if(receiptQueue.isNotEmpty())receiptQueue.removeFirst()
-        receiptBusy=false
-        if(!isFinishing && automaticReceiptReads<receiptBatchLimit && receiptQueue.isNotEmpty())
-            receiptWeb.postDelayed({startAutomaticReceipt()},450)
-        else if(!isFinishing && wallet()) {
-            checkRequestedTransaction()
-            // Refresh the visible list once after the receipt batch; do not create a
-            // recursive scan loop for invoices whose details are unavailable.
-            if(receiptQueue.isEmpty()) refreshReceiptLabels()
+    private fun finishAutomaticReceipt() {
+        if (receiptQueue.isNotEmpty()) receiptQueue.removeFirst()
+        receiptBusy = false
+        if (automaticReads < RECEIPT_BATCH && receiptQueue.isNotEmpty()) receipts.after(450) { startAutomaticReceipt() }
+        else {
+            if (!screen.isWebShown) render()
+            checkRequested()
         }
     }
 
-    private fun refreshReceiptLabels(){
-        list.removeAllViews()
-        records.values.forEach{row->
-            val ref=row.optString("reference")
-            val receipt=receiptCache[ref]
-            val account=receipt?.optString("account").orEmpty()
-            val price=verifiedAmount(row)
-            val summary=row.optString("service")+"."+
-                (if(account.isNotBlank())" $account." else " Recipient not identified.")+
-                (if(price=="Not available")" Amount not available." else " MVR $price.")+
-                " "+row.optString("status")+". "+row.optString("date")+"."
-            list.addView(Button(this).apply{
-                minHeight=buttonHeight
-                text="$summary View details"
-                contentDescription="$summary View details and transaction reference."
-                setOnClickListener{detail(row,if(category=="Payments")"Wallet deposit" else "")}
-            })
+    // ---------- payment check requested by the payment screen ----------
+
+    private fun checkRequested() {
+        val service = verifyService ?: return
+        if (verificationAnnounced || category != "Recharges" || verifyRecipient.isBlank()) return
+        val expected = verifyAmount
+        val possible = records.values.filter { row ->
+            val receipt = receiptCache[row.optString("reference")] ?: return@filter false
+            FaseyhaRules.walletRowMatches(service, row.optString("service"), row.optString("amount"),
+                row.optString("date"), expected, verifyStartedAt) &&
+                FaseyhaRules.normalizeRecipient(receipt.optString("account")) == FaseyhaRules.normalizeRecipient(verifyRecipient) &&
+                FaseyhaRules.sameMoney(FaseyhaRules.money(receipt.optString("amount")) ?: FaseyhaRules.money(row.optString("amount")), expected)
+        }
+        when {
+            possible.size == 1 -> {
+                val row = possible.first()
+                verificationAnnounced = true
+                status.text = "Found your payment. Status: ${row.optString("status")}."
+                AlertDialog.Builder(this).setTitle("Your payment in Faseyha Wallet")
+                    .setMessage("Service: ${row.optString("service")}\nRecipient: $verifyRecipient\n" +
+                        "Amount: MVR ${FaseyhaRules.format(expected)}\nStatus: ${row.optString("status")}\n" +
+                        "Date: ${row.optString("date")}\nReference: ${row.optString("reference")}")
+                    .setPositiveButton("OK", null).show()
+            }
+            possible.size > 1 -> {
+                verificationAnnounced = true
+                status.text = "More than one recent transaction matches your payment. Compare their references."
+            }
+            !receiptBusy && receiptQueue.isEmpty() && automaticReads > 0 ->
+                status.text = "Your payment is not in the Wallet list yet. Refresh in a minute before paying again."
         }
     }
 
-    private fun loadMore(){
-        if(!wallet()){state.text="Open Wallet before loading older entries.";return}
-        if(busy){state.text="Already loading.";return}
-        if(records.size>=limit){state.text="Reached maximum of "+limit+" records.";return}
-        busy=true
-        val js="""(function(){
-          const matching=Array.from(document.querySelectorAll('button,[role="button"]'))
-            .filter(x=>x.getClientRects().length&&!x.disabled)
-            .filter(x=>/^load more$/i.test((x.innerText||x.getAttribute('aria-label')||'').trim()));
-          if(matching.length!==1)return JSON.stringify({ok:false});
-          matching[0].click();return JSON.stringify({ok:true});
-        })();"""
-        web.evaluateJavascript(js){raw->
-            if(decode(raw)?.optBoolean("ok")!=true){
-                busy=false;state.text="Load More wasn't available. Existing entries remain."
-            }else web.postDelayed({busy=false;if(wallet())scan()},900)
-        }
+    @Deprecated("Deprecated in Java")
+    override fun onBackPressed() {
+        if (screen.isWebShown) screen.showNative() else super.onBackPressed()
     }
-    override fun onDestroy(){
+
+    override fun onDestroy() {
         receiptQueue.clear()
-        if(::receiptWeb.isInitialized){(receiptWeb.parent as? ViewGroup)?.removeView(receiptWeb);receiptWeb.destroy()}
-        (web.parent as? ViewGroup)?.removeView(web);web.destroy();super.onDestroy()
+        if (::receipts.isInitialized) receipts.destroy()
+        if (::page.isInitialized) page.destroy()
+        super.onDestroy()
     }
 }

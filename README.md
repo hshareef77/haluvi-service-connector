@@ -1,5 +1,24 @@
 # Haluvi Service Connector
 
+## v2.24 native screens, Ooredoo Bill Pay fixes and simpler flow
+
+**Screens.** Home opens **Faseyha payments**, **Faseyha Wallet** and **Faseyha website and sign in** directly. Payments and Wallet are fully native; the Faseyha page they drive runs hidden behind the native screen and is excluded from TalkBack. Sign-in and manual checking use the separate website screen, which shares the same saved session. A signed-out session is detected and the app offers the website screen; on return it reloads automatically. **More options, Show provider page** reveals the hidden page when needed.
+
+**Payment flow.** Choose the service, enter the number and amount (or choose the package), press **Continue**. The app opens the service, selects the operator, enters the details, waits for Faseyha's validation and shows one native review with the wallet balance. After **Confirm** it presses Faseyha's button once. It presses Faseyha's own confirmation only if that dialog shows the same recipient, operator and amount. Then it reads the result and checks the Wallet entry and receipt. The result reports Successful, Processing, Failed or Needs review, with the reference and the balance change. **View in Wallet** and **New transaction** follow. A warning appears before paying the same recipient again within 30 minutes.
+
+**Ooredoo Bill Pay and reliability fixes.**
+- Operator tabs that show only a logo are recognized through their image description. Labels such as "Ooredoo / Supernet" or "Ooredoo Postpaid" also work, and the selected tab is read from standard selected/active markers.
+- The app keeps trying for up to eight seconds while Faseyha renders the operator tabs, forms and package cards, instead of failing on the first check.
+- Bill forms that first show only an account field use one clearly non-payment lookup button (Check, View bill and similar). If Faseyha shows a fixed bill amount, the app offers to use it.
+- Results, confirmations and Wallet matching accept the Supernet, Postpaid and Raastas names Faseyha uses for Ooredoo. Wallet rows named Postpaid, Supernet or Broadband count as bill payments. Recipients are matched with or without +960 and spacing.
+- Faseyha confirmation dialogs labelled Confirm, Confirm payment or Yes, pay are handled. Totals labelled Total, Total amount or Amount to pay are checked, not only "Total to pay".
+- Package payments use the order-summary **total** as the authorised amount. A package lost after a page reload is selected again automatically.
+- Safety bug fixed: opening a service page no longer re-enables a repeat payment after a submission.
+
+**Simplified code.** One shared script library replaces three receipt parsers, two Wallet scanners and duplicated operator checks. Unused functions, manual "user-reported" statuses, the old field inspectors and the second embedded browser are removed. Matching rules live in `FaseyhaRules.kt` with JVM unit tests. The app payment log (More options, Recent payments from this app) is recorded automatically.
+
+**Still needs phone testing.** These changes were tested against simulated Faseyha pages, not the live site. **Copy page report for support** copies page structure without field values, to help diagnose any page that still stops.
+
 ## v2.3 combined fixes: package flow and Wallet receipt details
 
 - Package Recharge **Continue** now fills the seven-digit recipient in the website and checks the actual provider order summary before showing a native review. It no longer prompts the user to choose the operator/package a second time. It **never** presses the Activate Package/Pay button.

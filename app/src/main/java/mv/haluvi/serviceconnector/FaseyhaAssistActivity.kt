@@ -2,1780 +2,917 @@ package mv.haluvi.serviceconnector
 
 import android.app.Activity
 import android.app.AlertDialog
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Intent
 import android.os.Bundle
-import android.net.Uri
 import android.text.InputType
 import android.view.View
-import android.view.ViewGroup
-import android.webkit.CookieManager
-import android.webkit.WebChromeClient
-import android.webkit.WebResourceRequest
-import android.webkit.WebView
-import android.webkit.WebViewClient
-import android.widget.*
+import android.widget.Button
+import android.widget.EditText
+import android.widget.LinearLayout
+import android.widget.TextView
+import android.widget.Toast
+import org.json.JSONArray
 import org.json.JSONObject
 import java.math.BigDecimal
+import java.text.DateFormat
+import java.util.Date
 
 /**
- * Assisted Faseyha website form preparation.
- *
- * Deliberately does NOT submit forms or invoke private provider endpoints.
- * Every transaction must be verified and submitted by the user on the actual website.
- * Field inspection does not extract typed values, cookies, balances or screen text.
+ * Native Faseyha payment screen. A hidden Faseyha page (the signed-in session from
+ * the website screen) is driven step by step: open the service, choose the operator,
+ * enter the details, wait for Faseyha's validation, then show a native review.
+ * After one confirmation the app presses Faseyha's button once, handles Faseyha's
+ * own confirmation only if it shows the same details, reads the result, and checks
+ * the Wallet entry and receipt. Nothing is ever retried automatically.
  */
 class FaseyhaAssistActivity : Activity() {
-    private lateinit var web: WebView
+    private enum class Stage { IDLE, PREPARING, REVIEW, SUBMITTED, VERIFYING, DONE }
+
+    private data class PackageChoice(val text: String, val title: String, val price: BigDecimal?)
+
+    private class Txn(val service: FaseyhaService, val recipient: String, var amount: BigDecimal?,
+                      val packageTitle: String?, val balanceBefore: BigDecimal?) {
+        var summary = ""
+        var startedAt = 0L
+        var ledgerId: String? = null
+        var accepted = false
+        var secondStageDone = false
+        var processingPolls = 0
+        var chain = 0
+        var walletAttempts = 0
+        var walletStarted = 0L
+        var candidate: JSONObject? = null
+        var outcome = ""
+    }
+
+    private lateinit var screen: EngineScreen
+    private lateinit var form: FaseyhaEngine
+    private lateinit var verifier: FaseyhaEngine
+    private lateinit var balanceText: TextView
+    private lateinit var status: TextView
+    private lateinit var serviceButton: Button
+    private lateinit var categoryButton: Button
+    private lateinit var packageButton: Button
     private lateinit var number: EditText
     private lateinit var amount: EditText
-    private lateinit var service: Button
-    private lateinit var operator: Button
-    private val serviceChoices = arrayOf(
-        "Dhiraagu Reload", "Ooredoo Raastas", "Dhiraagu Bill Pay",
-        "Ooredoo Bill Pay", "Medianet Bill Pay", "Dhiraagu Packages", "Ooredoo Packages"
-    )
-    private var selectedServiceChoice = 0
-    private var serviceIndex = 0
-    private var operatorIndex = 1
-    private val services = arrayOf("Recharge", "Package Recharge", "Bill Pay")
-    private val operators = arrayOf("Ooredoo", "Dhiraagu")
-    private val billOperators = arrayOf("Dhiraagu", "Ooredoo", "Medianet")
-    private var billOperatorIndex = 0
-    private var pendingOperator = false
-    private var pendingPreparation = false
-    private var submissionAttempted = false
-    private var observingProviderResult = false
-    private var pendingPaymentRecipient: String? = null
-    private var pendingPaymentAmount: String? = null
-    private var pendingPaymentAction: String? = null
-    private var providerResultNoticeShown = false
-    private var submissionStartedAt: Long = 0L
-    private lateinit var walletVerifier: WebView
-    private lateinit var receiptVerifier: WebView
-    private var walletCheckActive = false
-    private var walletCheckComplete = false
-    private var walletCheckAttempts = 0
-    private var receiptCheckReference: String? = null
-    private var receiptCandidate: JSONObject? = null
-    private var walletCheckStartedAt = 0L
-    private var approvedSummary: String? = null
-    private var providerAcceptedBill = false
     private lateinit var continueButton: Button
-    private lateinit var newPaymentButton: Button
-    private lateinit var packageCategory: Button
-    private lateinit var packageChoice: Button
-    private var selectedPackageLabel: String? = null
-    private var selectedPackagePrice: String? = null
-    private lateinit var state: TextView
-    private var homeUrl: String = "https://faseyha.net"
-    private var prepared = false
-    private var lastPreparedSignature: String? = null
-    private val allowedHost = "faseyha.net"
+    private lateinit var resultActions: LinearLayout
+    private lateinit var more: LinearLayout
+
+    private val prefs by lazy { getSharedPreferences("faseyha_assist", MODE_PRIVATE) }
+    private var service = FaseyhaRules.SERVICES[0]
+    private var category: String? = null
+    private var chosenPackage: PackageChoice? = null
+
+    // State of the hidden Faseyha page; cleared on every page load.
+    private var pageReadyFor: FaseyhaService? = null
+    private var pageCategory: String? = null
+    private var pagePackage: String? = null
+    private var afterLoad: (() -> Unit)? = null
+    /** Incremented to cancel every pending step of an earlier preparation. */
+    private var generation = 0
+
+    private var stage = Stage.IDLE
+    private var txn: Txn? = null
+    private var balance: BigDecimal? = null
+    private var signedOut = false
+    private var signInPrompted = false
+    private var resumedOnce = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val selected = intent.getStringExtra("url") ?: homeUrl
-        val uri = Uri.parse(selected)
-        if (uri.scheme != "https" || !trusted(uri.host)) {
-            AlertDialog.Builder(this).setTitle("Unsupported website")
-                .setMessage("The Faseyha assistant works only with faseyha.net HTTPS pages.")
-                .setPositiveButton("Close") { _, _ -> finish() }.setCancelable(false).show()
-            return
-        }
-        homeUrl = selected
-
-        val layout = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(16.dp, 10.dp, 16.dp, 10.dp)
-        }
-        val title = TextView(this).apply { text = "Haluvi Service Connector"; textSize = 22f; if (android.os.Build.VERSION.SDK_INT >= 28) isAccessibilityHeading = true }
-        layout.addView(title)
-        layout.addView(TextView(this).apply {
-            text = "Choose service and recipient. Review the provider total before confirming any payment."
-        })
-        service = Button(this).apply {
-            minHeight = 56.dp
-            setOnClickListener { chooseService() }
-        }
-        layout.addView(service)
-        operator = Button(this).apply { visibility = View.GONE }
-        // The selected service determines the operator: a second selector is unnecessary.
-        packageCategory = Button(this).apply {
-            minHeight = 56.dp
-            text = "Package category: All. Choose category"
-            contentDescription = "Package category, selected All. Choose category."
-            setOnClickListener { chooseNativePackageCategory() }
-        }
-        layout.addView(packageCategory)
-        packageChoice = Button(this).apply {
-            minHeight = 56.dp
-            text = "Package: Not selected. Choose package"
-            contentDescription = "Package, not selected. Choose package."
-            setOnClickListener { inspectPackageSummary() }
-        }
-        layout.addView(packageChoice)
-        updateSelections()
-        number = EditText(this).apply {
-            hint = "Mobile number"; inputType = InputType.TYPE_CLASS_PHONE; setSingleLine(true)
-        }
-        layout.addView(number)
+        service = FaseyhaRules.SERVICES.getOrElse(prefs.getInt("service", 0)) { FaseyhaRules.SERVICES[0] }
+        screen = EngineScreen(this, "Faseyha payments")
+        balanceText = screen.text("Wallet balance: checking…", 18f, live = true)
+        serviceButton = screen.button("") { chooseService() }
+        categoryButton = screen.button("") { chooseCategory() }
+        packageButton = screen.button("") { choosePackage() }
+        number = EditText(this).apply { setSingleLine(true) }
+        screen.panel.addView(number)
         amount = EditText(this).apply {
-            hint = "Amount MVR"; inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL; setSingleLine(true)
+            setSingleLine(true); hint = "Amount (MVR)"; contentDescription = "Amount in MVR"
+            inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
         }
-        layout.addView(amount)
-        state = TextView(this).apply { text = "Status: Opening Faseyha"; textSize = 15f; accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE }
-        layout.addView(state)
-        val primary = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        val actions = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; visibility = View.GONE }
-        fun action(label: String, work: () -> Unit) {
-            actions.addView(Button(this).apply {
-                text = label; minHeight = 48.dp; setOnClickListener { work() }
-            })
+        screen.panel.addView(amount)
+        continueButton = screen.button("Continue") { startPreparation() }
+        status = screen.text("Opening Faseyha…", 17f, live = true)
+        resultActions = screen.section()
+        screen.button("View in Wallet", resultActions) { openWallet(verify = true) }
+        screen.button("New transaction", resultActions) { newTransaction() }
+        screen.button("Faseyha Wallet") { openWallet(verify = false) }
+        screen.button("Open Faseyha website") { openFaseyhaWebsite() }
+        lateinit var moreToggle: Button
+        moreToggle = screen.button("More options") {
+            more.visibility = if (more.visibility == View.GONE) View.VISIBLE else View.GONE
+            moreToggle.text = if (more.visibility == View.VISIBLE) "Hide more options" else "More options"
         }
-        continueButton=Button(this).apply {
-            text="Continue";minHeight=56.dp
-            setOnClickListener { prepareSelectedService() }
+        more = screen.section()
+        screen.button("Show provider page", more) {
+            screen.showWeb(form, "Faseyha ${service.label} page used by the app. Check before paying here yourself.")
         }
-        primary.addView(continueButton)
-        newPaymentButton=Button(this).apply {
-            text="New transaction";minHeight=56.dp;visibility=View.GONE
-            setOnClickListener {
-                if(walletCheckActive){
-                    state.text="Checking the previous payment. Review its status before starting another."
-                }else AlertDialog.Builder(this@FaseyhaAssistActivity)
-                    .setTitle("New transaction")
-                    .setMessage("Your previous request may already be charged. Check Wallet before repeating it. Start a new transaction?")
-                    .setNegativeButton("Cancel",null)
-                    .setPositiveButton("Start"){_,_->
-                        submissionAttempted=false
-                        observingProviderResult=false
-                        providerResultNoticeShown=false
-                        providerAcceptedBill=false
-                        approvedSummary=null
-                        pendingPaymentRecipient=null
-                        pendingPaymentAmount=null
-                        pendingPaymentAction=null
-                        submissionStartedAt=0L
-                        walletCheckActive=false
-                        walletCheckComplete=false
-                        receiptCandidate=null
-                        receiptCheckReference=null
-                        number.text?.clear()
-                        amount.text?.clear()
-                        clearPackageSelection()
-                        continueButton.isEnabled=true
-                        newPaymentButton.visibility=View.GONE
-                        web.visibility=View.VISIBLE
-                        actions.visibility=View.GONE
-                        pendingOperator=true
-                        openFaseyhaPath(selectedPath())
-                        state.text="Enter the details for your new transaction."
-                    }.show()
-            }
-        }
-        primary.addView(newPaymentButton)
+        screen.button("Copy page report for support", more) { copyReport() }
+        screen.button("Recent payments from this app", more) { showLog() }
+        screen.button("Refresh wallet balance", more) { refreshBalance() }
+        screen.button("Cancel preparation", more) { cancelPreparation("Preparation cancelled. Nothing was paid.") }
 
-
-        primary.addView(Button(this).apply { text = "Faseyha Wallet and Transactions"; minHeight = 56.dp; setOnClickListener {
-            startActivity(android.content.Intent(this@FaseyhaAssistActivity, FaseyhaWalletActivity::class.java))
-        } })
-
-
-
-
-        primary.addView(Button(this).apply { text = "Website options"; minHeight = 56.dp; setOnClickListener {
-            actions.visibility = if (actions.visibility == View.GONE) View.VISIBLE else View.GONE
-            if(actions.visibility == View.VISIBLE)web.visibility=View.VISIBLE
-            text = if (actions.visibility == View.VISIBLE) "Hide website options" else "Website options"
-        } })
-        action("Apply operator again") { applyOperator() }
-        action("Read provider order summary") { readOrderSummary() }
-        action("Inspect current transaction result") { inspectResult() }
-        action("Transaction records and review") { showRecords() }
-        action("Open selected service") {
-            val path = when (serviceIndex) {
-                0 -> "/recharge"
-                1 -> "/packages"
-                else -> "/bills"
-            }
-            openFaseyhaPath(path)
-        }
-        action("Open dashboard") { openFaseyhaPath("/dashboard") }
-        action("Payment test instructions") { showTestGuide() }
-        action("Inspect current website form") { inspect() }
-        action("Inspect service choices and controls") { inspectChoices() }
-                action("Fill current page form — do not pay") { prepare() }
-        action("Open Faseyha homepage") { openFaseyhaPath("/") }
-        action("Browser back") { if (web.canGoBack()) web.goBack() }
-        action("Browser forward") { if (web.canGoForward()) web.goForward() }
-        action("Refresh") { web.reload() }
-        action("Close assistant") { finish() }
-        web = WebView(this).apply {
-            settings.javaScriptEnabled = true
-            settings.domStorageEnabled = true
-            settings.allowFileAccess = false
-            settings.allowContentAccess = false
-            settings.setSupportMultipleWindows(false)
-            settings.javaScriptCanOpenWindowsAutomatically = false
-            webChromeClient = WebChromeClient()
-            webViewClient = object : WebViewClient() {
-                override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
-                    if (request.url.scheme == "https") return false
-                    message("Only HTTPS links can open inside this browser.")
-                    return true
-                }
-                override fun onPageFinished(view: WebView, url: String) {
-                    CookieManager.getInstance().flush()
-                    if (observingProviderResult && isTrusted()) view.postDelayed({ checkProviderResult(0) },700)
-                    prepared = false
-                    lastPreparedSignature = null
-                    if (pendingOperator && isTrusted() && Uri.parse(url).path == selectedPath()) {
-                        pendingOperator = false
-                        web.postDelayed({ if (isTrusted() && Uri.parse(web.url ?: "").path == selectedPath()) applyOperator(false) }, 450)
-                    }
-                    else if (pendingPreparation && !pendingOperator && isTrusted() && Uri.parse(url).path == selectedPath()) {
-                        pendingPreparation = false
-                        web.postDelayed({ prepareWhenReady(0) }, 1200)
-                    }
-                    if (!observingProviderResult && !submissionAttempted && isTrusted()) state.text = if (Uri.parse(url).path.isNullOrBlank() || Uri.parse(url).path == "/") "Faseyha homepage loaded. Open Dashboard and a payment form in the website below before inspecting." else "Faseyha page loaded. Open the relevant number and amount form, then inspect."
-                    else if (!isTrusted()) state.text = "This page is outside faseyha.net. The native field assistant is disabled."
-                }
-            }
-        }
-        CookieManager.getInstance().setAcceptCookie(true)
-        layout.addView(primary)
-        // Browser troubleshooting details belong in the optional advanced controls,
-        // not the normal TalkBack payment flow.
-        layout.addView(web, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 460.dp))
-        layout.addView(actions)
-        // Read-only background browser shares the authenticated Faseyha cookie jar.
-        // It never submits transactions. Keep it out of accessibility focus.
-        walletVerifier = WebView(this).apply {
-            settings.javaScriptEnabled=true
-            settings.domStorageEnabled=true
-            settings.allowFileAccess=false
-            settings.allowContentAccess=false
-            importantForAccessibility=View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
-            webViewClient=object:WebViewClient() {
-                override fun shouldOverrideUrlLoading(view:WebView,request:WebResourceRequest):Boolean {
-                    return request.url.scheme!="https" || !trusted(request.url.host)
-                }
-                override fun onPageFinished(view:WebView,url:String) {
-                    if(walletCheckActive && Uri.parse(url).path=="/wallet" && trusted(Uri.parse(url).host))
-                        view.postDelayed({ scanVerificationWallet(0) },1000)
-                }
-            }
-        }
-        layout.addView(walletVerifier,LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,1.dp))
-        receiptVerifier = WebView(this).apply {
-            settings.javaScriptEnabled=true
-            settings.domStorageEnabled=true
-            settings.allowFileAccess=false
-            settings.allowContentAccess=false
-            importantForAccessibility=View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
-            webViewClient=object:WebViewClient() {
-                override fun shouldOverrideUrlLoading(view:WebView,request:WebResourceRequest):Boolean {
-                    return request.url.scheme!="https" || !trusted(request.url.host)
-                }
-                override fun onPageFinished(view:WebView,url:String) {
-                    if(walletCheckActive && receiptCheckReference!=null &&
-                        Uri.parse(url).path?.startsWith("/invoice/")==true && trusted(Uri.parse(url).host))
-                        view.postDelayed({ inspectVerificationReceipt() },650)
-                }
-            }
-        }
-        layout.addView(receiptVerifier,LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,1.dp))
-        val scroller = ScrollView(this).apply { isFillViewport = true; addView(layout) }
-        setContentView(scroller)
-        web.loadUrl(homeUrl)
+        verifier = FaseyhaEngine(this) { onVerifierLoaded(it) }
+        form = FaseyhaEngine(this) { onFormLoaded(it) }
+        screen.attach(verifier)
+        screen.attach(form)
+        setContentView(screen.root)
+        updateSelections()
+        refreshBalance()
+        openService()
     }
 
+    override fun onResume() {
+        super.onResume()
+        if (!resumedOnce) { resumedOnce = true; return }
+        if (signedOut) {
+            signedOut = false
+            refreshBalance()
+            if (stage == Stage.IDLE) openService()
+        } else if (stage == Stage.IDLE || stage == Stage.DONE) refreshBalance()
+    }
+
+    // ---------- selections ----------
+
     private fun updateSelections() {
-        val name=serviceChoices[selectedServiceChoice]
-        service.text="Service: $name. Change"
-        service.contentDescription="Service, selected $name. Double tap to change."
-        operator.visibility=View.GONE
-        if (::packageCategory.isInitialized)
-            packageCategory.visibility=if(serviceIndex==1 && operatorIndex==1) View.VISIBLE else View.GONE
-        if (::packageChoice.isInitialized)
-            packageChoice.visibility=if(serviceIndex==1) View.VISIBLE else View.GONE
-        if (::amount.isInitialized) {
-            amount.visibility=if(serviceIndex==1) View.GONE else View.VISIBLE
-            amount.isEnabled=serviceIndex!=1
-        }
-        if (::number.isInitialized) {
-            val bill=serviceIndex==2
-            number.hint=if(bill) "Account or service number" else "Mobile number (7 digits)"
-            number.contentDescription=number.hint
-            number.inputType=if(bill)
-                InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS
-                else InputType.TYPE_CLASS_PHONE
-        }
+        serviceButton.text = "Service: ${service.label}. Change"
+        serviceButton.contentDescription = "Service, selected ${service.label}. Double tap to change."
+        val isPackage = service.kind == Kind.PACKAGE
+        categoryButton.visibility = if (isPackage && service.operator == "Dhiraagu") View.VISIBLE else View.GONE
+        categoryButton.text = "Package category: ${category ?: "All"}. Change"
+        packageButton.visibility = if (isPackage) View.VISIBLE else View.GONE
+        packageButton.text = chosenPackage?.let { p ->
+            "Package: ${p.title}" + (p.price?.let { ", MVR " + FaseyhaRules.format(it) } ?: "") + ". Change"
+        } ?: "Package: not selected. Choose package"
+        amount.visibility = if (isPackage) View.GONE else View.VISIBLE
+        val bill = service.kind == Kind.BILL
+        number.hint = if (bill) "Account or service number" else "Mobile number (7 digits)"
+        number.contentDescription = number.hint
+        number.inputType = if (bill) InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS else InputType.TYPE_CLASS_PHONE
     }
 
     private fun chooseService() {
-        AlertDialog.Builder(this).setTitle("Choose service. Currently "+serviceChoices[selectedServiceChoice])
-            .setSingleChoiceItems(serviceChoices,selectedServiceChoice){dialog,selected->
+        if (stage == Stage.SUBMITTED || stage == Stage.VERIFYING) {
+            notice("Wait until the last payment has been checked."); return
+        }
+        val labels = FaseyhaRules.SERVICES.map { it.label }.toTypedArray()
+        val current = FaseyhaRules.SERVICES.indexOf(service)
+        AlertDialog.Builder(this).setTitle("Choose service")
+            .setSingleChoiceItems(labels, current) { dialog, index ->
                 dialog.dismiss()
-                if(selected!=selectedServiceChoice) {
-                    if(submissionAttempted) {
-                        message("A payment was already attempted. Check Wallet before preparing another transaction.")
-                        return@setSingleChoiceItems
-                    }
-                    selectedServiceChoice=selected
-                    when(selected) {
-                        0 -> {serviceIndex=0;operatorIndex=1}
-                        1 -> {serviceIndex=0;operatorIndex=0}
-                        2 -> {serviceIndex=2;billOperatorIndex=0}
-                        3 -> {serviceIndex=2;billOperatorIndex=1}
-                        4 -> {serviceIndex=2;billOperatorIndex=2}
-                        5 -> {serviceIndex=1;operatorIndex=1}
-                        else -> {serviceIndex=1;operatorIndex=0}
-                    }
-                    number.text?.clear()
-                    amount.text?.clear()
-                    clearPackageSelection()
+                if (index == current) return@setSingleChoiceItems
+                whenPreviousSettled {
+                    service = FaseyhaRules.SERVICES[index]
+                    prefs.edit().putInt("service", index).apply()
+                    category = null
+                    chosenPackage = null
+                    resetTransaction()
                     updateSelections()
-                    pendingOperator=true
-                    openFaseyhaPath(selectedPath())
+                    openService()
                 }
-            }.setNegativeButton("Cancel",null).show()
-    }
-
-    private fun chooseNativePackageCategory() {
-        if (serviceIndex != 1 || operatorIndex != 1) return
-        if (!isTrusted() || Uri.parse(web.url ?: "").path != "/packages") {
-            openFaseyhaPath("/packages")
-            state.text = "Package page opening. Choose a category again after the website loads."
-            return
-        }
-        val js = """(function(){
-          const tidy=x=>(x||'').replace(/\s+/g,' ').trim();
-          const names=Array.from(document.querySelectorAll('button,[role="tab"],[role="button"]'))
-            .filter(x=>x.getClientRects().length>0 && !x.disabled)
-            .map(x=>tidy(x.innerText||x.getAttribute('aria-label')||''))
-            .filter(x=>/^(all|special offer|mini data plans|weekly|monthly|data|call only|salhi|[0-9]+ ?gb)$/i.test(x))
-            .filter((x,i,a)=>a.indexOf(x)===i);
-          return JSON.stringify({categories:names});
-        })();"""
-        web.evaluateJavascript(js) { raw ->
-            try {
-                val arr=JSONObject(org.json.JSONArray("[$raw]").getString(0)).getJSONArray("categories")
-                if (arr.length()==0) {
-                    message("No readable category selector was found. Select the category on Faseyha's website, then browse packages.")
-                } else choosePackageGroup(Array(arr.length()){i->arr.getString(i)})
-            } catch (_: Exception) { message("Unable to retrieve package categories from Faseyha.") }
-        }
-    }
-
-    private fun selectedPath(): String = when (serviceIndex) {
-        0 -> "/recharge"
-        1 -> "/packages"
-        else -> "/bills"
-    }
-
-    private fun prepareSelectedService() {
-        val expected = selectedPath()
-        if (!isTrusted()) {
-            message("This page is outside Faseyha. Open your selected service again.")
-            return
-        }
-        if (Uri.parse(web.url ?: "").path != expected) {
-            pendingOperator = true
-            pendingPreparation = true
-            openFaseyhaPath(expected)
-            state.text = "Opening provider service and preparing automatically."
-            return
-        }
-        // The service selector may have scheduled a provider operator click.
-        // Do not fill fields against the previous operator while that runs.
-        if(pendingOperator) {
-            pendingPreparation=true
-            state.text="Waiting for selected provider operator before preparing the form."
-            return
-        }
-        prepareWhenReady(0)
-    }
-
-    private fun prepareWhenReady(attempt:Int) {
-        if (!isTrusted() || Uri.parse(web.url ?: "").path != selectedPath()) return
-        if(pendingOperator) {
-            if(attempt<15)web.postDelayed({prepareWhenReady(attempt+1)},650)
-            else message("Provider operator selection is incomplete. No payment submitted.")
-            return
-        }
-        if (serviceIndex == 1) { prepare(); return }
-        if(attempt>=15) { message("Provider form is not ready. Check operator selection and try Continue again. No payment was submitted."); return }
-        val js = """(function(){return Array.from(document.querySelectorAll('input')).filter(x=>x.getClientRects().length>0 && !x.disabled && !x.readOnly && !/hidden|password|submit|button|radio|checkbox/.test(x.type)).length})()"""
-        web.evaluateJavascript(js) { raw ->
-            if ((raw.trim().toIntOrNull() ?: 0) >= 2) prepare()
-            else web.postDelayed({ prepareWhenReady(attempt+1) },650)
-        }
-    }
-
-    private fun openFaseyhaPath(path: String) {
-        if (path !in setOf("/", "/dashboard", "/recharge", "/packages", "/bills")) {
-            message("Unsupported service path.")
-            return
-        }
-        prepared = false
-        submissionAttempted = false
-        observingProviderResult = false
-        providerResultNoticeShown = false
-        lastPreparedSignature = null
-        val destination = "https://faseyha.net" + path
-        state.text = "Opening Faseyha " + (if (path == "/") "homepage" else path.removePrefix("/")) + "."
-        web.loadUrl(destination)
-    }
-
-    private val Int.dp: Int get() = (this * resources.displayMetrics.density).toInt()
-    private fun trusted(host: String?): Boolean {
-        val h = host?.lowercase() ?: return false
-        return h == allowedHost || h.endsWith(".$allowedHost")
-    }
-    private fun isTrusted(): Boolean {
-        val uri = Uri.parse(web.url ?: "")
-        return uri.scheme == "https" && trusted(uri.host)
-    }
-    private fun message(text: String) {
-        AlertDialog.Builder(this).setMessage(text).setPositiveButton("OK", null).show()
-    }
-    private fun inspect() {
-        if (!isTrusted()) { message("Field inspection is only enabled on the Faseyha website."); return }
-        // No field contents or credential values are read; report only visible, non-sensitive control descriptors.
-        val script = """(function(){
-          const fields=Array.from(document.querySelectorAll('input,select,textarea'))
-            .filter(x=>x.getClientRects().length && !['hidden','password','email'].includes((x.type||'').toLowerCase()))
-            .slice(0,40).map(x=>{
-              const label=x.labels&&x.labels.length?x.labels[0].innerText:'';
-              const desc=[label,x.getAttribute('aria-label'),x.getAttribute('placeholder'),x.name,x.id]
-                .filter(Boolean).join(' ').slice(0,90);
-              return {type:(x.type||x.tagName).slice(0,24),label:desc};
-            });
-          return JSON.stringify({path:location.pathname.slice(0,120),fields:fields});
-        })();"""
-        web.evaluateJavascript(script) { raw ->
-            try {
-                val parsed = org.json.JSONArray("[$raw]").getString(0)
-                val obj = JSONObject(parsed)
-                val fields = obj.getJSONArray("fields")
-                val report = StringBuilder("Visible form controls: ${fields.length()}\nCurrent page: ${obj.optString("path")}\n")
-                for (i in 0 until fields.length()) {
-                    val f = fields.getJSONObject(i)
-                    report.append("\n${i + 1}. ${f.optString("type")}: ${f.optString("label")}")
-                }
-                if (fields.length() == 0) report.append("\nNo visible form inputs on this page. This usually means you are on the Faseyha homepage or dashboard, not the payment form. Open Dashboard in the website, choose Bill Pay or Recharge, and open its number and amount fields before trying again.")
-                report.append("\n\nNo field values, login tokens, or passwords were collected.")
-                message(report.toString())
-            } catch (e: Exception) { message("Could not inspect the current form. Try again after it loads.") }
-        }
-    }
-    private fun prepare() {
-        if (!isTrusted()) { message("You can only fill fields on the Faseyha website."); return }
-        if (Uri.parse(web.url ?: "").path != selectedPath()) {
-            message("The website is not on the selected service page. Use Prepare selected service form to open it first.")
-            return
-        }
-        val target = number.text.toString().trim()
-        val money = amount.text.toString().trim()
-        val isBill = serviceIndex == 2
-        val validTarget = if (isBill) target.matches(Regex("[A-Za-z0-9-]{5,30}"))
-            else target.matches(Regex("[0-9]{7}"))
-        if (!validTarget) {
-            number.error = if (isBill) "Enter a valid account or service number, including any letters"
-                           else "Enter a seven-digit Maldives mobile number"
-            number.requestFocus()
-            return
-        }
-        if (serviceIndex == 1) {
-            if (selectedPackageLabel == null) {
-                message("Choose a package first. The package selector is directly above the mobile number.")
-                return
-            }
-            // Selected provider package is retained. Continue fills the recipient only.
-            fillPackageRecipient(target)
-            return
-        }
-        val parsed = money.toBigDecimalOrNull()
-        if (parsed == null || parsed <= BigDecimal.ZERO || parsed > BigDecimal("100000") || parsed.scale() > 2) {
-            amount.error = "Enter a positive amount with at most two decimal places"; amount.requestFocus(); return
-        }
-        fill(target, parsed.toPlainString())
-    }
-    private fun fillPackageRecipient(target: String) {
-        if (!isTrusted() || Uri.parse(web.url ?: "").path != "/packages") {
-            message("Open the Faseyha Packages page before filling.")
-            return
-        }
-        val js = """(function(value){
-            const fields=Array.from(document.querySelectorAll('input')).filter(x=>x.getClientRects().length>0 && !x.disabled && !x.readOnly && !['hidden','password','submit','button'].includes((x.type||'').toLowerCase()));
-            const label=x=>[(x.labels&&x.labels.length?x.labels[0].innerText:''),x.getAttribute('aria-label'),x.getAttribute('placeholder'),x.name,x.id].filter(Boolean).join(' ').toLowerCase();
-            const choices=fields.filter(x=>/(mobile|phone|number|7xxxxxxx|7x{4,})/.test(label(x)));
-            if(choices.length!==1) return JSON.stringify({ok:false,reason:'Found '+choices.length+' possible recipient fields. Need exactly one.'});
-            const input=choices[0];
-            Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,value);
-            input.dispatchEvent(new Event('input',{bubbles:true}));
-            input.dispatchEvent(new Event('change',{bubbles:true}));
-            return JSON.stringify({ok:input.value===value,reason:input.value===value?'Recipient field matches. Package selection and price are NOT verified.':'The website did not retain the intended recipient.'});
-        })(${JSONObject.quote(target)});"""
-        web.evaluateJavascript(js) { raw ->
-            try {
-                val result = JSONObject(org.json.JSONArray("[$raw]").getString(0))
-                if (result.optBoolean("ok")) {
-                    state.text = "Recipient prepared. Reading Faseyha order summary."
-                    web.postDelayed({ reviewPreparedPackage(target) }, 400)
-                } else message("Package recipient not filled: " + result.optString("reason"))
-            } catch (_: Exception) { message("Could not verify the package recipient. No payment was submitted.") }
-        }
-    }
-
-    private fun reviewPreparedPackage(target: String) {
-        if (!isTrusted() || Uri.parse(web.url ?: "").path != "/packages") {
-            message("The provider page changed. Package review stopped. No payment was submitted.")
-            return
-        }
-        val chosen = selectedPackageLabel ?: run {
-            message("Selected package was lost. Choose a package again.")
-            return
-        }
-        val js = """(function(number){
-           const t=(document.body.innerText||'');
-           const i=t.toLowerCase().lastIndexOf('order summary');
-           if(i<0) return JSON.stringify({ok:false,reason:'Order summary unavailable'});
-           const summary=t.slice(i,i+950).replace(/\s+/g,' ').trim();
-           const numberMatched=new RegExp('(^|\\D)'+number+'(\\D|$)').test(summary);
-           const hasTotal=/total\s+to\s+pay|total\s*:?\s*(?:MVR|Rf|ރ)/i.test(summary);
-           const hasPackage=/\bpackage\b/i.test(summary);
-           return JSON.stringify({ok:numberMatched&&hasTotal&&hasPackage,recipientMatched:numberMatched,summary:summary});
-        })(__NUMBER__);""".replace("__NUMBER__",JSONObject.quote(target))
-        web.evaluateJavascript(js) { raw ->
-            try {
-                val result=JSONObject(org.json.JSONArray("[$raw]").getString(0))
-                if (!result.optBoolean("ok")) {
-                    state.text="Provider package or recipient could not be verified in order summary. Review Faseyha below. Nothing was paid."
-                    message(state.text.toString())
-                    return@evaluateJavascript
-                }
-                val summary=result.optString("summary")
-                val shortName=chosen.substringBefore(" SPECIAL OFFER",chosen).take(55)
-                state.text="Package recipient matches. Review provider details before payment."
-                AlertDialog.Builder(this).setTitle("Review Faseyha package — no payment submitted")
-                    .setMessage("Operator: ${operators[operatorIndex]}\nRecipient: $target\nSelected package: $shortName\n\nActual provider order summary:\n$summary\n\nConfirm the amount and total before selecting Activate package.")
-                    .setPositiveButton("Confirm"){_,_->submitOnce(target,null,summary)}
-                    .setNegativeButton("Review website",null)
-                    .show()
-            } catch (_:Exception) { message("Could not read the provider order summary. No payment was submitted.") }
-        }
-    }
-
-    private fun fill(target: String, money: String, attempt: Int = 0) {
-        if (!isTrusted() || Uri.parse(web.url ?: "").path != selectedPath()) { message("The website changed. Reopen the selected Faseyha page."); return }
-        // Serialize arguments through JSONObject.quote, never interpolate raw user input into JavaScript.
-        val js = """(function(number,amount){
-           const visible=x=>x.getClientRects().length>0 && !x.disabled && !x.readOnly;
-           const fields=Array.from(document.querySelectorAll('input')).filter(visible)
-             .filter(x=>!['hidden','password','email','submit','button','checkbox','radio'].includes((x.type||'').toLowerCase()));
-           const label=x=>[(x.labels&&x.labels.length?x.labels[0].innerText:''),x.getAttribute('aria-label'),
-             x.getAttribute('placeholder'),x.name,x.id].filter(Boolean).join(' ').toLowerCase();
-           let num=fields.filter(x=>/(mobile|phone|number|account|subscriber|service|7xxxxxxx)/.test(label(x)));
-           let amt=fields.filter(x=>/(amount|price|pay|mvr)/.test(label(x)));
-           if((num.length!==1||amt.length!==1||num[0]===amt[0])&&fields.length===2){
-             const numeric=fields.filter(x=>/amount|mvr|price/i.test(label(x)));
-             if(numeric.length===1){amt=numeric;num=fields.filter(x=>x!==amt[0]);}
-             else if(fields.length===2){num=[fields[0]];amt=[fields[1]];}
-           }
-           if(num.length!==1 || amt.length!==1 || num[0]===amt[0])
-             return JSON.stringify({ok:false,n:num.length,a:amt.length,reason:'Found '+num.length+' number fields and '+amt.length+' amount fields; need exactly one of each'});
-           function update(x,value){
-              const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;
-              setter.call(x,value);x.dispatchEvent(new Event('input',{bubbles:true}));
-              x.dispatchEvent(new Event('change',{bubbles:true}));
-              // Some bill-pay forms validate after the field loses focus.
-              x.dispatchEvent(new FocusEvent('blur'));
-           }
-           update(num[0],number);update(amt[0],amount);
-           const verified = num[0].value === number && amt[0].value === amount;
-           return JSON.stringify({ok:verified,reason:verified?'Both website fields match the requested values. No payment submitted.':'Website altered a value; inspect and correct manually.'});
-         })(${JSONObject.quote(target)},${JSONObject.quote(money)});"""
-        web.evaluateJavascript(js) { raw ->
-            try {
-                val data = JSONObject(org.json.JSONArray("[$raw]").getString(0))
-                val ok = data.optBoolean("ok")
-                prepared = ok
-                if (ok) {
-                    val signature = listOf(services[serviceIndex], target, money, web.url ?: "").joinToString("|")
-                    if (signature != lastPreparedSignature) {
-                        FaseyhaLedger.create(this, services[serviceIndex], target, money)
-                        lastPreparedSignature = signature
-                    }
-                }
-                state.text = if (ok) "Fields match. Preparing final review." else "Form not prepared: ${data.optString("reason")}. Check the current service form."
-                if(ok) web.postDelayed({ reviewWhenReady(target,money,0) },600)
-                else if(attempt<8 && data.optInt("n",0)==0 && data.optInt("a",0)==0) web.postDelayed({fill(target,money,attempt+1)},650)
-                else message(state.text.toString())
-            } catch (e: Exception) { message("Unable to verify form filling. Do not assume the fields were completed.") }
-        }
-    }
-
-
-    // A reactive provider form can update its summary and enable the submit button
-    // AFTER native input/change events. Wait for the visible provider state to settle
-    // before displaying the final authorization dialog.
-    // Wait for Faseyha's validation before allowing the native payment review.
-    // This does not click any payment control.
-    private fun reviewWhenReady(target:String,money:String,attempt:Int) {
-        if (!isTrusted() || Uri.parse(web.url ?: "").path!=selectedPath()) {
-            message("Provider page changed. Nothing was submitted.");return
-        }
-        val script="""(function(target,amount,operatorName){
-            const tidy=x=>(x||'').replace(/\s+/g,' ').trim();
-            const body=document.body.innerText||'',i=body.toLowerCase().lastIndexOf('order summary');
-            const summary=i<0?'':tidy(body.slice(i,i+900));
-            const visible=x=>x.getClientRects().length>0 && getComputedStyle(x).visibility!=='hidden';
-            const action=__ACTION__;
-            const candidates=Array.from(document.querySelectorAll('button,input[type="submit"],[role="button"]'))
-                .filter(visible).filter(x=>{
-                    const labels=[x.innerText,x.value,x.getAttribute('aria-label')].filter(Boolean)
-                        .map(v=>tidy(v).toLowerCase());
-                    return labels.some(label=>action==='Recharge'
-                        ?/^recharge(?:\s+(?:mvr|rf|ރ)?\s*\d[\d,.]*)?$/.test(label)
-                        :/^pay(?:\s+(?:mvr|rf|ރ)?\s*\d[\d,.]*)?$/.test(label));
-                });
-            const enabled=candidates.filter(x=>!x.disabled &&
-                x.getAttribute('aria-disabled')!=='true' && getComputedStyle(x).pointerEvents!=='none');
-            const inputs=Array.from(document.querySelectorAll('input'))
-                .filter(x=>visible(x)&&!x.disabled&&!['password','hidden','submit','button','radio','checkbox'].includes((x.type||'').toLowerCase()));
-            const numberMatch=inputs.some(x=>tidy(x.value)===target);
-            const amountMatch=inputs.some(x=>Number(x.value)===Number(amount));
-            const invalid=inputs.filter(x=>x.required && !x.checkValidity())
-                .map(x=>tidy(x.getAttribute('aria-label')||x.placeholder||x.name||x.id).slice(0,60));
-            // Faseyha BillPay shows its operator in an active tab above the form.
-            // The order summary may omit the operator, so verify the selected
-            // tab instead of incorrectly treating its absence as a mismatch.
-            const selector=Array.from(document.querySelectorAll('button,[role="tab"],[role="radio"],[role="button"]'))
-                .filter(visible).filter(x=>{
-                    const label=tidy(x.innerText||x.getAttribute('aria-label')||'').toLowerCase();
-                    return ['dhiraagu','ooredoo','medianet'].includes(label);
-                });
-            function chosen(x){
-                if(x.getAttribute('aria-selected')==='true'||x.getAttribute('aria-checked')==='true'||
-                    x.getAttribute('data-state')==='active'||x.getAttribute('data-state')==='checked'||
-                    x.getAttribute('aria-pressed')==='true') return true;
-                const cls=(' '+(typeof x.className==='string'?x.className:'')+' ').toLowerCase();
-                return /(?:^|[\s_-])(selected|active|checked|current)(?:[\s_-]|$)/.test(cls);
-            }
-            const selected=selector.filter(chosen);
-            const explicitTab=selector.length===3 && selected.length===1 &&
-                tidy(selected[0].innerText||selected[0].getAttribute('aria-label')).toLowerCase()===operatorName.toLowerCase();
-            // BillPay renders "Ooredoo / Supernet" and a Quick Pay card instead of an
-            // Order summary. Verify its provider-specific heading and card.
-            const heading=Array.from(document.querySelectorAll('h1,h2,h3,h4,[role="heading"]'))
-                .filter(visible).map(x=>tidy(x.innerText||x.textContent).toLowerCase());
-            const providerCard=body.toLowerCase().includes('pay any '+operatorName.toLowerCase()) ||
-                (operatorName==='Ooredoo' && body.toLowerCase().includes('pay any ooredoo postpaid'));
-            const providerHeading=heading.some(x=>x===operatorName.toLowerCase() ||
-                x.startsWith(operatorName.toLowerCase()+' /')) ||
-                (operatorName==='Ooredoo' && body.toLowerCase().includes('ooredoo / supernet'));
-            const billOperatorMatch=explicitTab || (providerHeading && providerCard);
-            const operatorMatch=action==='Pay' ? billOperatorMatch :
-                (summary.toLowerCase().includes(operatorName.toLowerCase()) || explicitTab);
-            return JSON.stringify({summary:summary,found:candidates.length,enabled:enabled.length,
-                numberMatch:numberMatch,amountMatch:amountMatch,invalid:invalid,
-                operatorMatch:operatorMatch,selectedOperator:selected.length===1?tidy(selected[0].innerText):'',
-                providerHeading:providerHeading,providerCard:providerCard,
-                operatorControlCount:selector.length});
-        })(__TARGET__,__MONEY__,__OP__);"""
-            .replace("__ACTION__",JSONObject.quote(if(serviceIndex==0)"Recharge" else "Pay"))
-            .replace("__TARGET__",JSONObject.quote(target))
-            .replace("__MONEY__",JSONObject.quote(money))
-            .replace("__OP__",JSONObject.quote(if(serviceIndex==2)billOperators[billOperatorIndex] else operators[operatorIndex]))
-        web.evaluateJavascript(script){raw->
-            try{
-                val data=JSONObject(org.json.JSONArray("[$raw]").getString(0))
-                val summary=data.optString("summary")
-                if((serviceIndex==2 || summary.isNotBlank()) && data.optInt("enabled")==1 &&
-                    data.optBoolean("numberMatch") && data.optBoolean("amountMatch") &&
-                    data.optBoolean("operatorMatch")) {
-                    reviewFinalAction(target,money)
-                } else if(attempt<19) {
-                    if(attempt==4 || attempt==12)
-                        state.text="Waiting for Faseyha to validate the account and enable payment. No payment has been submitted."
-                    web.postDelayed({reviewWhenReady(target,money,attempt+1)},650)
-                } else {
-                    val invalid=data.optJSONArray("invalid")
-                    val missing=if(invalid!=null && invalid.length()>0)
-                        (0 until invalid.length()).joinToString(", "){invalid.optString(it)} else ""
-                    val reason=when {
-                        !data.optBoolean("numberMatch") || !data.optBoolean("amountMatch") ->
-                            "The provider form did not retain the recipient or amount."
-                        summary.isBlank() && serviceIndex!=2 ->
-                            "Faseyha has not generated an order summary for this account."
-                        !data.optBoolean("operatorMatch") ->
-                            "Faseyha operator could not be verified from its order summary or active operator tab. No payment is authorized."
-                        missing.isNotBlank() ->
-                            "Faseyha requires additional information: $missing."
-                        data.optInt("found")==0 ->
-                            "The Faseyha payment control was not found."
-                        data.optInt("enabled")==0 ->
-                            "Faseyha's Pay button is still disabled. The provider may require account validation or an additional form step."
-                        else -> "More than one payment control was found; automatic payment was blocked."
-                    }
-                    state.text="$reason No payment was submitted. Review the website below."
-                    message(state.text.toString())
-                }
-            }catch(_:Exception){message("Unable to verify provider readiness. No payment submitted.")}
-        }
-    }
-
-    private fun reviewFinalAction(target:String,money:String) {
-        if(!isTrusted() || Uri.parse(web.url ?: "").path!=selectedPath()) {
-            message("Provider page changed. Review cancelled.");return
-        }
-        val js="""(function(){
-            const t=document.body.innerText||'',i=t.toLowerCase().lastIndexOf('order summary');
-            return JSON.stringify({summary:i>=0?t.slice(i,i+900).replace(/\s+/g,' ').trim():''});
-        })();"""
-        web.evaluateJavascript(js){raw->
-            try{
-                val summary=JSONObject(org.json.JSONArray("[$raw]").getString(0)).optString("summary")
-                val op=if(serviceIndex==2)billOperators[billOperatorIndex] else operators[operatorIndex]
-                val action=if(serviceIndex==0)"Recharge" else "Pay"
-                val details="Service: "+serviceChoices[selectedServiceChoice]+
-                    "\nRecipient/account: "+target+"\nAmount: MVR "+money+
-                    (if(summary.isNotBlank())"\n\nFaseyha order summary:\n"+summary else
-                        "\n\nFaseyha Quick Pay does not display an order summary. The selected provider, account, amount and enabled Pay control were verified.")+
-                    "\n\nConfirm authorizes this payment once. No payment has been submitted yet."
-                AlertDialog.Builder(this).setTitle("Review "+action+" — not submitted")
-                    .setMessage(details)
-                    .setPositiveButton("Confirm"){_,_->submitOnce(target,money,summary)}
-                    .setNegativeButton("Review website",null).show()
-            }catch(_:Exception){message("Provider summary cannot be read. No payment submitted.")}
-        }
-    }
-
-    private fun confirmFinalSubmission(target:String,money:String?,reviewedSummary:String) {
-        if(submissionAttempted){message("A provider action was already attempted. Check history before retrying.");return}
-        val op=if(serviceIndex==2)billOperators[billOperatorIndex] else operators[operatorIndex]
-        val action=when(serviceIndex){0->"Recharge";1->"Activate package";else->"Pay"}
-        val detail="This will press Faseyha's actual "+action+" button and may spend wallet funds immediately.\n\nService: "+
-            services[serviceIndex]+"\nOperator: "+op+"\nRecipient/account: "+target+
-            (if(serviceIndex==1)"\nPackage: "+selectedPackageLabel.orEmpty() else "\nAmount: MVR "+money.orEmpty())+
-            "\n\nVerify provider total. Never retry an uncertain payment without checking its history."
-        AlertDialog.Builder(this).setTitle("Final confirmation — "+action)
-            .setMessage(detail).setNegativeButton("Cancel",null)
-            .setPositiveButton("Confirm "+action){_,_->submitOnce(target,money,reviewedSummary)}.show()
-    }
-
-    private fun submitOnce(target:String,money:String?,reviewedSummary:String) {
-        if(submissionAttempted || !isTrusted() || Uri.parse(web.url?:"").path!=selectedPath()
-            || number.text.toString().trim()!=target
-            || (money!=null && amount.text.toString().trim().toBigDecimalOrNull()!=money.toBigDecimalOrNull())) {
-            message("Provider page or request values changed. No submission.");return
-        }
-        val op=if(serviceIndex==2)billOperators[billOperatorIndex] else operators[operatorIndex]
-        val action=when(serviceIndex){0->"Recharge";1->"Activate package";else->"Pay"}
-        val js="""(function(path,recipient,money,operatorName,action,priorSummary){
-            if(location.protocol!=='https:'||location.hostname!=='faseyha.net'||location.pathname!==path)
-                return JSON.stringify({ok:false,reason:'Provider URL changed'});
-            const clean=t=>(t||'').replace(/\s+/g,' ').trim();
-            const text=document.body.innerText||'',i=text.toLowerCase().lastIndexOf('order summary');
-            const summary=i<0?'':clean(text.slice(i,i+900));
-            // A previous provider submission can leave a success/submitted modal open.
-            // Do not click Pay again through it.
-            if(action==='Pay' && /bill\s*payment\s*successful/i.test(text) &&
-               /\b(submitted|being processed|notify you once)\b/i.test(text))
-                return JSON.stringify({ok:false,reason:'Faseyha already shows a submitted bill payment. Check Wallet before attempting another.'});
-            if(priorSummary && priorSummary!==summary) return JSON.stringify({ok:false,reason:'Order summary changed'});
-            // Quick Pay displays recipient in an input, not body.innerText.
-            // For bill payments the exact value is independently checked below.
-            if(action!=='Pay' && !new RegExp('(^|\\D)'+recipient+'(\\D|$)').test(summary||text))
-                return JSON.stringify({ok:false,reason:'Recipient not confirmed'});
-            const visible=x=>x.getClientRects().length>0 && getComputedStyle(x).visibility!=='hidden';
-            const tabs=Array.from(document.querySelectorAll('button,[role="tab"],[role="radio"],[role="button"]'))
-                .filter(visible).filter(x=>['dhiraagu','ooredoo','medianet'].includes(
-                    clean(x.innerText||x.getAttribute('aria-label')).toLowerCase()));
-            const active=x=>{
-                if(['aria-selected','aria-checked','aria-pressed'].some(k=>x.getAttribute(k)==='true')||
-                    ['active','checked'].includes(x.getAttribute('data-state')))return true;
-                const cls=(' '+(typeof x.className==='string'?x.className:'')+' ').toLowerCase();
-                return /(?:^|[\s_-])(selected|active|checked|current)(?:[\s_-]|$)/.test(cls);
-            };
-            const activeTabs=tabs.filter(active);
-            const selectedTab=tabs.length===3 && activeTabs.length===1 &&
-                clean(activeTabs[0].innerText||activeTabs[0].getAttribute('aria-label')).toLowerCase()===operatorName.toLowerCase();
-            const headings=Array.from(document.querySelectorAll('h1,h2,h3,h4,[role="heading"]'))
-                .filter(visible).map(x=>clean(x.innerText||x.textContent).toLowerCase());
-            const providerHeading=headings.some(x=>x===operatorName.toLowerCase()||
-                x.startsWith(operatorName.toLowerCase()+' /'))||
-                (operatorName==='Ooredoo' && text.toLowerCase().includes('ooredoo / supernet'));
-            const providerCard=text.toLowerCase().includes('pay any '+operatorName.toLowerCase())||
-                (operatorName==='Ooredoo' && text.toLowerCase().includes('pay any ooredoo postpaid'));
-            const billOperatorMatched=selectedTab || (providerHeading && providerCard);
-            const operatorMatched=action==='Pay'?billOperatorMatched:
-                (summary.toLowerCase().includes(operatorName.toLowerCase()) || selectedTab);
-            if(!operatorMatched)
-                return JSON.stringify({ok:false,reason:'Selected provider does not match the authorized transaction'});
-            if(action==='Activate package'){
-                if(!summary||!/\bpackage\b/i.test(summary)||!/\btotal\b/i.test(summary))
-                    return JSON.stringify({ok:false,reason:'Provider package summary missing'});
-            } else {
-                const fields=Array.from(document.querySelectorAll('input')).filter(x=>x.getClientRects().length>0&&!x.disabled);
-                if(!fields.some(x=>clean(x.value)===recipient)||!fields.some(x=>Number(x.value)===Number(money)))
-                    return JSON.stringify({ok:false,reason:'Provider inputs no longer match'});
-                if(action==='Recharge' && (!summary||!/\btotal\b/i.test(summary)))
-                    return JSON.stringify({ok:false,reason:'Recharge summary missing'});
-            }
-            // The provider can display "Recharge 12.00" instead of just "Recharge".
-            // Never click if missing, disabled or ambiguous.
-            const candidates=Array.from(document.querySelectorAll('button,input[type="submit"],[role="button"]'))
-                .filter(visible).filter(x=>{
-                    const raw=[x.innerText,x.value,x.getAttribute('aria-label')].filter(Boolean).map(clean);
-                    return raw.some(label=>{
-                        const value=label.toLowerCase();
-                        return action==='Recharge'?/^recharge(?:\s+(?:mvr|rf|ރ)?\s*\d[\d,.]*)?$/.test(value):
-                          action==='Pay'?/^pay(?:\s+(?:mvr|rf|ރ)?\s*\d[\d,.]*)?$/.test(value):
-                          /^activate package(?:\s+(?:mvr|rf|ރ)?\s*\d[\d,.]*)?$/.test(value);
-                    });
-                });
-            const matches=candidates.filter(x=>!x.disabled && x.getAttribute('aria-disabled')!=='true' && getComputedStyle(x).pointerEvents!=='none');
-            if(matches.length!==1)return JSON.stringify({ok:false,reason:matches.length===0?
-              'Faseyha action not enabled. Verify operator, recipient, amount or package on provider form (matching '+candidates.length+' disabled controls).':
-              'Ambiguous enabled provider actions: '+matches.length});
-            window.__haluviBeforeSubmit=(document.body.innerText||"").split(/\n/).map(x=>x.trim()).filter(Boolean);
-            try{sessionStorage.setItem('haluvi_before_submit',JSON.stringify(window.__haluviBeforeSubmit));}catch(e){}
-            matches[0].click();return JSON.stringify({ok:true});
-        })(__PATH__,__TARGET__,__MONEY__,__OP__,__ACTION__,__SUMMARY__);"""
-            .replace("__PATH__",JSONObject.quote(selectedPath()))
-            .replace("__TARGET__",JSONObject.quote(target))
-            .replace("__MONEY__",JSONObject.quote(money ?: ""))
-            .replace("__OP__",JSONObject.quote(op))
-            .replace("__ACTION__",JSONObject.quote(action))
-            .replace("__SUMMARY__",JSONObject.quote(reviewedSummary))
-        web.evaluateJavascript(js){raw->
-            try{
-                val obj=JSONObject(org.json.JSONArray("[$raw]").getString(0))
-                if(obj.optBoolean("ok")) {
-                    pendingPaymentRecipient=target
-                    pendingPaymentAmount=money
-                    pendingPaymentAction=action
-                    submissionAttempted=true
-                    continueButton.isEnabled=false
-                    submissionStartedAt=System.currentTimeMillis()
-                    approvedSummary=reviewedSummary
-                    walletCheckActive=false
-                    walletCheckComplete=false
-                    walletCheckAttempts=0
-                    providerAcceptedBill=false
-                    observingProviderResult=true
-                    providerResultNoticeShown=false
-                    state.text="Processing your request. Please do not submit it again."
-                    web.postDelayed({ checkProviderResult(0) },750)
-                } else {
-                    state.text="Submission blocked: "+obj.optString("reason")+". No provider transaction was confirmed."
-                    message(state.text.toString())
-                }
-            }catch(_:Exception){submissionAttempted=true;message("Submission result uncertain. Check Wallet; do not retry automatically.")}
-        }
-    }
-
-
-    // Inspect visible changes after the user's confirmed provider action.
-    // Never turn a button-click acknowledgment into a success claim.
-    private fun checkProviderResult(attempt:Int) {
-        if (!observingProviderResult || providerResultNoticeShown || isFinishing) return
-        if (attempt > 35) {
-            observingProviderResult = false
-            providerResultNoticeShown = true
-            state.text = "Request processed. Checking Wallet internally; do not retry."
-            startInternalWalletCheck()
-            return
-        }
-        if(!isTrusted()) {
-            observingProviderResult=false
-            providerResultNoticeShown=true
-            state.text="Provider page changed. Checking Wallet internally; no payment will be repeated."
-            startInternalWalletCheck()
-            return
-        }
-        val js="""(function(){
-            const clean=x=>(x||'').replace(/\s+/g,' ').trim();
-            const page=document.body.innerText||'';
-            const wantedRecipient=__TARGET__;
-            const wantedAmount=Number(__MONEY__);
-            const wantedOperator=__OP__;
-            const billPayment=__ACTION__==='Pay';
-            // BillPay uses a result modal, not a second confirmation.
-            // Inspect the fully rendered confirmation, even when it is not
-            // exposed through aria-live or marked as a fresh line.
-            const successNodes=Array.from(document.querySelectorAll('h1,h2,h3,h4,[role="heading"],div,p,section'))
-                .filter(x=>x.getClientRects().length>0 &&
-                    /^bill\s*payment\s*successful$/i.test(clean(x.innerText||'')))
-                .slice(0,12);
-            let billReceipt=null;
-            if(billPayment && successNodes.length){
-                for(const node of successNodes){
-                    let parent=node;
-                    for(let depth=0;parent&&depth<7;parent=parent.parentElement,depth++){
-                        const summary=clean(parent.innerText||'');
-                        if(summary.length>1000)break;
-                        const hasSubmission=/\bsubmitted\b/i.test(summary) &&
-                            /being processed|notify you once|once it.s confirmed/i.test(summary);
-                        const hasProvider=summary.toLowerCase().includes(wantedOperator.toLowerCase());
-                        const hasRecipient=summary.toUpperCase().includes(wantedRecipient.toUpperCase());
-                        const money=summary.match(/(?:MVR|Rf|ރ)\s*([0-9,]+(?:\.[0-9]{1,2})?)/i);
-                        const total=money?Number(money[1].replace(/,/g,'')):NaN;
-                        if(hasSubmission && hasProvider && hasRecipient && Number.isFinite(total) &&
-                           total===wantedAmount){
-                            billReceipt={classification:'Provider accepted payment',
-                                message:'Bill payment submitted',recipient:wantedRecipient,
-                                amount:total,operator:wantedOperator};
-                            break;
-                        }
-                    }
-                    if(billReceipt)break;
-                }
-            }
-            if(billReceipt)return JSON.stringify(billReceipt);
-            let old=window.__haluviBeforeSubmit||[];
-            if(!old.length){try{old=JSON.parse(sessionStorage.getItem("haluvi_before_submit")||"[]");}catch(e){}}
-            const oldSet=new Set(old.map(clean));
-            // The first Recharge click can open a provider confirmation modal.
-            const visible=x=>x.getClientRects().length>0 && getComputedStyle(x).visibility!=='hidden';
-            const desired=__ACTION__.toLowerCase();
-            const titleRe=desired==='Recharge'?/^confirm recharge$/i:desired==='Pay'?/^confirm (?:bill )?pay(?:ment)?$/i:/^confirm (?:package|activation)$/i;
-            // Locate the actual Faseyha confirmation by its unique visible
-            // action pair. Do not depend on a heading tag: the provider often
-            // renders its "Confirm recharge" title in a plain div.
-            const label=x=>clean(x.innerText||x.value||x.getAttribute('aria-label')||x.textContent);
-            const enabled=x=>visible(x)&&!x.disabled&&x.getAttribute('aria-disabled')!=='true';
-            const buttons=Array.from(document.querySelectorAll('button,[role="button"],input[type="submit"]')).filter(visible);
-            const positive=buttons.filter(x=>/^(confirm\s*(?:&|and)\s*recharge|confirm\s+recharge|confirm\s*(?:&|and)\s*pay|confirm\s+payment|confirm\s+activation)$/i.test(label(x)));
-            let confirmation=null;
-            if(positive.length===1&&enabled(positive[0])){
-              let p=positive[0].parentElement;
-              for(let d=0;p&&d<9;d++,p=p.parentElement){
-                const body=clean(p.innerText||'');
-                if(body.length>1200)break;
-                const siblings=Array.from(p.querySelectorAll('button,[role="button"],input[type="submit"]')).filter(visible);
-                if(siblings.some(x=>/^(cancel|back|close|no)$/i.test(label(x)))
-                   &&siblings.filter(x=>x===positive[0]).length===1
-                   &&/confirm\s+(?:recharge|payment|bill|activation)/i.test(body)){
-                  confirmation={summary:body,positive:label(positive[0])};break;
-                }
-              }
-            }
-            if(confirmation)return JSON.stringify({classification:'Awaiting confirmation',message:confirmation.summary,actionLabel:confirmation.positive,pathname:location.pathname});
-            const notices=Array.from(document.querySelectorAll('[role="alert"],[role="status"],[aria-live],.toast,.notification,.alert,[role="dialog"]'))
-                .filter(x=>x.getClientRects().length>0 && getComputedStyle(x).visibility!=='hidden')
-                .map(x=>clean(x.innerText||x.textContent)).filter(x=>x && x.length<500 && !oldSet.has(x));
-            const fresh=(document.body.innerText||'').split(/\n/).map(clean)
-                .filter(x=>x && x.length<350 && !oldSet.has(x));
-            const all=[...new Set([...notices,...fresh])];
-            let classification='Unknown',message='';
-            for(const line of all){
-                if(/insufficient (?:wallet )?(?:balance|funds)|not enough (?:balance|funds)/i.test(line)){
-                    classification='Insufficient balance';message=line;break;
-                }
-                if(/\b(failed|declined|unsuccessful|rejected|payment error|transaction error)\b/i.test(line)){
-                    classification='Failed';message=line;break;
-                }
-                // BillPay's headline can render before the operator, recipient,
-                // amount and Submitted details. The separate receipt matcher above
-                // must validate all of them before reporting acceptance.
-                if(billPayment && /bill\s*payment\s*successful/i.test(line))continue;
-                if(/\b(successful|successfully|payment completed|transaction completed|activated successfully|recharge complete)\b/i.test(line)){
-                    classification='Provider reported success';message=line;break;
-                }
-                if(/\b(processing|pending|submitted|being processed)\b/i.test(line)){
-                    classification='Processing';message=line;break;
-                }
-            }
-            return JSON.stringify({classification:classification,message:message,pathname:location.pathname});
-        })();"""
-            .replace("__ACTION__",JSONObject.quote(pendingPaymentAction ?: ""))
-            .replace("__TARGET__",JSONObject.quote(pendingPaymentRecipient.orEmpty()))
-            .replace("__MONEY__",JSONObject.quote(pendingPaymentAmount ?: selectedPackagePrice ?: ""))
-            .replace("__OP__",JSONObject.quote(if(serviceIndex==2)billOperators[billOperatorIndex] else operators[operatorIndex]))
-        web.evaluateJavascript(js){raw->
-            if(!observingProviderResult || providerResultNoticeShown || isFinishing)return@evaluateJavascript
-            try{
-                val result=JSONObject(org.json.JSONArray("[$raw]").getString(0))
-                val classification=result.optString("classification","Unknown")
-                if(classification=="Awaiting confirmation"){
-                    observingProviderResult=false
-                    showSecondStageConfirmation(result.optString("message"), result.optString("actionLabel"))
-                } else if(classification=="Processing"){
-                    // Processing is not a final result. Continue observing without resubmitting.
-                    if(attempt==0 || attempt==10 || attempt==25)
-                        state.text="Faseyha is processing. Waiting for a final result; do not retry."
-                    // Wait for the provider's rendered receipt before checking Wallet.
-                    web.postDelayed({checkProviderResult(attempt+1)},1100)
-                } else if(classification!="Unknown"){
-                    observingProviderResult=false
-                    providerResultNoticeShown=true
-                    if(classification=="Provider reported success" || classification=="Provider accepted payment") {
-                        finishPaymentScreen()
-                        providerAcceptedBill=serviceIndex==2
-                        state.text=if(providerAcceptedBill)
-                            "Bill payment submitted successfully to Faseyha for "+
-                                pendingPaymentRecipient.orEmpty()+", MVR "+
-                                pendingPaymentAmount.orEmpty()+". Checking final status."
-                            else "Request received by Faseyha. Checking final status."
-                        // Give the provider's result page time to finish rendering.
-                        web.postDelayed({if(!isFinishing)startInternalWalletCheck()},2500)
-                    }else {
-                        state.text=when(classification){
-                            "Insufficient balance"->"Insufficient wallet balance. Payment could not be completed."
-                            "Failed"->"Faseyha reported that the payment failed. Check history before trying again."
-                            else->"Faseyha could not complete the request. Check history before trying again."
-                        }
-                    }
-                }else web.postDelayed({checkProviderResult(attempt+1)},900)
-            }catch(_:Exception){
-                web.postDelayed({checkProviderResult(attempt+1)},900)
-            }
-        }
-    }
-
-    // Internal read-only reconciliation. No navigation and no payment retries.
-    private fun finishPaymentScreen() {
-        if(!::newPaymentButton.isInitialized)return
-        continueButton.isEnabled=false
-        newPaymentButton.visibility=View.VISIBLE
-        if(::web.isInitialized)web.visibility=View.GONE
-        // Keep advanced controls available only on demand.
-    }
-
-    private fun startInternalWalletCheck() {
-        if (walletCheckComplete || isFinishing || submissionStartedAt==0L) return
-        if (!::walletVerifier.isInitialized) return
-        if (walletCheckActive) return
-        walletCheckActive=true
-        walletCheckStartedAt=System.currentTimeMillis()
-        state.text=if(providerAcceptedBill)
-            "Bill payment submitted successfully. Checking final Wallet status."
-            else "Checking your transaction status."
-        walletVerifier.loadUrl("https://faseyha.net/wallet")
-    }
-
-    private fun scanVerificationWallet(pass:Int) {
-        if (!walletCheckActive || walletCheckComplete || isFinishing || !::walletVerifier.isInitialized) return
-        val uri=Uri.parse(walletVerifier.url ?: "")
-        if(uri.scheme!="https" || !trusted(uri.host) || uri.path!="/wallet"){
-            scheduleWalletRetry()
-            return
-        }
-        // Select the read-only Recharges category where necessary. Never click a
-        // recharge/pay action in this browser.
-        val js=StringBuilder().append("""(function(){
-            const tidy=x=>(x||'').replace(/\s+/g,' ').trim();
-            if(__CHOOSE__){
-              const tabs=Array.from(document.querySelectorAll('button,[role="tab"],[role="button"]'))
-                .filter(x=>x.getClientRects().length>0 && tidy(x.innerText||x.getAttribute('aria-label')).toLowerCase()==='recharges');
-              if(tabs.length===1)tabs[0].click();
-              return JSON.stringify({rows:[]});
-            }
-            const links=Array.from(document.querySelectorAll('a[href]'))
-                .filter(x=>/receipt|tax invoice/i.test(tidy(x.innerText||x.getAttribute('aria-label')))||
-                   /\/invoice\//i.test(x.href));
-            const statusPattern=/\b(successful|completed|processing|pending|failed|submitted)\b/i;
-            const referencePattern=/\b(?:FR|BLA)[A-Z0-9]{8,40}\b/i;
-            const datePattern=/\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2}(?:,\s*|\s+)\d{1,2}:\d{2}\s*(?:AM|PM)\b/i;
-            const rows=[],seen=new Set();
-            for(const a of links){
-              let item=null,p=a;
-              for(let n=0;n<10&&p;n++,p=p.parentElement){
-                const t=tidy(p.innerText||'');
-                if(t.length>=20&&t.length<=900&&referencePattern.test(t)&&
-                    statusPattern.test(t)&&datePattern.test(t)){item=p;break;}
-              }
-              if(!item)continue;
-              const t=tidy(item.innerText||'');
-              const ref=(t.match(referencePattern)||[])[0]||'';
-              if(!ref||seen.has(ref))continue;
-              seen.add(ref);
-              const status=(t.match(statusPattern)||[])[1]||'Unknown';
-              const date=(t.match(datePattern)||[])[0]||'';
-              const service=tidy(t.slice(0,t.indexOf(ref))).slice(0,100);
-              const leaves=Array.from(item.querySelectorAll('*'))
-                .filter(x=>x.getClientRects().length&&x.children.length===0)
-                .map(x=>tidy(x.textContent)).filter(x=>x.length&&x.length<45);
-              // FRF6591... is a reference, not "Rf 6591" currency.
-              const money=/^(?:MVR|MRf|Rf|ރ\.?)[ ]*([+-]?[ ]*[\d,]+(?:\.\d{1,2})?)$/i;
-              const values=leaves.map(x=>x.match(money)).filter(Boolean)
-                  .map(x=>x[1].replace(/[^0-9.,]/g,'')).filter(Boolean);
-              let amount=values.length===1?values[0]:'';
-              if(!amount){
-                  const tNoRef=t.replace(ref,' ');
-                  const m=tNoRef.match(/(?:^|[^a-zA-Z0-9])(?:MVR|MRf|Rf|ރ\.?)[ ]*([+-]?[ ]*[\d,]+(?:\.\d{1,2})?)(?![A-Za-z0-9])/i);
-                  if(m)amount=m[1].replace(/[^0-9.,]/g,'');
-              }
-              let url='';
-              try{
-                const u=new URL(a.href);
-                if(u.protocol==='https:'&&u.hostname==='faseyha.net'&&u.pathname.startsWith('/invoice/'))
-                  url=u.href;
-              }catch(e){}
-              rows.push({reference:ref,service:service,status:status,date:date,amount:amount,url:url});
-            }
-            return JSON.stringify({rows:rows.slice(0,75)});
-        })();""").toString().replace("__CHOOSE__",if(pass==0)"true" else "false")
-        walletVerifier.evaluateJavascript(js){raw->
-            if(!walletCheckActive || walletCheckComplete || isFinishing)return@evaluateJavascript
-            try {
-                val outer=JSONObject(org.json.JSONArray("[$raw]").getString(0))
-                if(pass==0){
-                    walletVerifier.postDelayed({scanVerificationWallet(1)},950)
-                    return@evaluateJavascript
-                }
-                val rows=outer.optJSONArray("rows") ?: org.json.JSONArray()
-                val matches=mutableListOf<JSONObject>()
-                for(i in 0 until rows.length()){
-                    val row=rows.optJSONObject(i) ?: continue
-                    if(isMatchingWalletCandidate(row))matches.add(row)
-                }
-                if(matches.size>1){
-                    state.text=if(providerAcceptedBill)
-                        "Faseyha accepted your bill payment. Multiple Wallet entries matched, so final status needs review."
-                        else "Multiple recent transactions match. Please check Wallet before trying again."
-                    walletCheckActive=false
-                    walletCheckComplete=true
-                    finishPaymentScreen()
-                }else if(matches.size==1){
-                    receiptCandidate=matches.first()
-                    val url=matches.first().optString("url")
-                    if(url.startsWith("https://faseyha.net/invoice/") && ::receiptVerifier.isInitialized){
-                        receiptCheckReference=matches.first().optString("reference")
-                        receiptVerifier.loadUrl(url)
-                    }else {
-                        // A unique wallet row without a matching recipient receipt
-                        // is suggestive, but not proof of this specific recipient.
-                        val status=matches.first().optString("status")
-                        state.text=if(providerAcceptedBill)
-                            "Bill payment submitted. Wallet status: $status. Receipt unavailable."
-                            else "Wallet status: $status. Receipt unavailable."
-                        walletCheckActive=false
-                        walletCheckComplete=true
-                        finishPaymentScreen()
-                    }
-                } else scheduleWalletRetry()
-            }catch (_:Exception){scheduleWalletRetry()}
-        }
-    }
-
-    private fun isMatchingWalletCandidate(row:JSONObject):Boolean {
-        val recipient=pendingPaymentRecipient ?: return false
-        if(recipient.isBlank() || submissionStartedAt<=0L)return false
-        val operator=if(serviceIndex==2)billOperators[billOperatorIndex] else operators[operatorIndex]
-        val name=row.optString("service")
-        if(!name.contains(operator,true))return false
-        val kind=when(serviceIndex){
-            0->name.contains("reload",true)||name.contains("raastas",true)||
-                (name.contains("recharge",true)&&!name.contains("package",true))
-            1->name.contains("package",true)||name.contains("data",true)
-            else->name.contains("bill",true)
-        }
-        if(!kind)return false
-        val amountExpected=(pendingPaymentAmount ?: selectedPackagePrice)?.replace(",","")
-            ?.toBigDecimalOrNull()
-        val amountSeen=row.optString("amount").replace(",","").toBigDecimalOrNull()
-        // Missing list amount may be recovered from an exact-reference receipt.
-        // Do not treat the wallet row alone as proof of the payment.
-        if(amountExpected==null || (amountSeen!=null &&
-            amountExpected.compareTo(amountSeen)!=0))return false
-        val date=row.optString("date")
-        val epoch=try {
-            val format=java.text.SimpleDateFormat("MMM d, h:mm a",java.util.Locale.ENGLISH)
-            format.isLenient=false
-            val parsed=format.parse(date.replace(Regex("\\s+")," ").trim()) ?: return false
-            val cal=java.util.Calendar.getInstance().apply {
-                time=parsed
-                set(java.util.Calendar.YEAR,java.util.Calendar.getInstance().get(java.util.Calendar.YEAR))
-            }
-            if(cal.timeInMillis>System.currentTimeMillis()+86400000L)
-                cal.add(java.util.Calendar.YEAR,-1)
-            cal.timeInMillis
-        }catch (_:Exception){return false}
-        return (epoch-submissionStartedAt) in -120000L..1800000L
-    }
-
-    private fun inspectVerificationReceipt(){
-        if(!walletCheckActive || walletCheckComplete || receiptCheckReference.isNullOrBlank() ||
-            !::receiptVerifier.isInitialized || isFinishing)return
-        val uri=Uri.parse(receiptVerifier.url ?: "")
-        if(uri.scheme!="https" || !trusted(uri.host) || uri.path?.startsWith("/invoice/")!=true){
-            scheduleWalletRetry();return
-        }
-        val js="""(function(){
-            const text=document.body.innerText||'';
-            const ref=(text.match(/receipt\s*(?:no\.?|number)\s*:?\s*([A-Z0-9]{8,45})/i)||[])[1]||'';
-            const total=(text.match(/(?:total amount|amount paid)\s*(?:MVR|Rf|ރ|ރ\.)?\s*([\d,]+(?:\.\d{1,2})?)/i)||[])[1]||'';
-            const service=(text.match(/description\s+([\s\S]{0,120}?)(?:total amount|amount paid)/i)||[])[1]||'';
-            const billTo=(text.match(/bill to\s+([A-Z0-9-]{5,32})/i)||[])[1]||'';
-            const candidates=(service.match(/\b[A-Z0-9-]{7,30}\b/gi)||[]).filter(x=>/\d/.test(x));
-            const recipient=candidates.find(x=>/^BB/i.test(x))||candidates[candidates.length-1]||billTo;
-            return JSON.stringify({reference:ref,total:total,recipient:recipient,paid:/\bpaid in full\b/i.test(text)});
-        })();"""
-        receiptVerifier.evaluateJavascript(js){raw->
-            if(!walletCheckActive || walletCheckComplete || isFinishing)return@evaluateJavascript
-            try {
-                val detail=JSONObject(org.json.JSONArray("[$raw]").getString(0))
-                val candidate=receiptCandidate ?: return@evaluateJavascript
-                val reference=receiptCheckReference.orEmpty()
-                val actual=detail.optString("reference")
-                val input=pendingPaymentRecipient.orEmpty().filter(Char::isLetterOrDigit)
-                    .removePrefix("960").uppercase(java.util.Locale.ROOT)
-                val account=detail.optString("recipient").filter(Char::isLetterOrDigit)
-                    .removePrefix("960").uppercase(java.util.Locale.ROOT)
-                val expected=(pendingPaymentAmount ?: selectedPackagePrice)
-                    ?.replace(",","")?.toBigDecimalOrNull()
-                val paid=detail.optString("total").replace(",","").toBigDecimalOrNull()
-                if(reference.equals(actual,true) && input.isNotBlank() && input==account &&
-                    expected!=null && paid!=null && expected.compareTo(paid)==0){
-                    walletCheckActive=false
-                    walletCheckComplete=true
-                    observingProviderResult=false
-                    finishPaymentScreen()
-                    val status=candidate.optString("status")
-                    state.text=(if(status.equals("Successful",true)||status.equals("Completed",true))
-                        "Payment successful in Faseyha Wallet. "
-                        else "Wallet status: $status. ")+
-                        serviceChoices[selectedServiceChoice]+", "+
-                        pendingPaymentRecipient.orEmpty()+", MVR "+expected+"."
-                }else {
-                    walletCheckActive=false
-                    walletCheckComplete=true
-                    finishPaymentScreen()
-                    val status=candidate.optString("status")
-                    state.text=if(providerAcceptedBill)
-                        "Bill payment submitted. Wallet status: $status. Recipient not confirmed."
-                        else "Wallet status: $status. Recipient not confirmed."
-                }
-            }catch (_:Exception){scheduleWalletRetry()}
-        }
-    }
-
-    private fun scheduleWalletRetry(){
-        if(!walletCheckActive || walletCheckComplete || isFinishing)return
-        receiptCheckReference=null
-        receiptCandidate=null
-        walletCheckAttempts++
-        if(walletCheckAttempts>=7 || System.currentTimeMillis()-walletCheckStartedAt>90000L){
-            walletCheckActive=false
-            walletCheckComplete=true
-            finishPaymentScreen()
-            state.text=if(providerAcceptedBill)
-                "Bill payment submitted successfully to Faseyha. Final Wallet confirmation is not available yet. "+
-                    "Please check history before making another payment."
-                else "Final transaction status is not available. Please check Wallet before trying again."
-        }else {
-            state.text=if(providerAcceptedBill)
-                "Bill payment submitted. Checking Wallet status."
-                else "Checking transaction status."
-            walletVerifier.postDelayed({
-                if(walletCheckActive && !isFinishing)
-                    walletVerifier.loadUrl("https://faseyha.net/wallet")
-            },6500)
-        }
-    }
-
-    private fun openWalletVerification() {
-        val verify = android.content.Intent(this, FaseyhaWalletActivity::class.java)
-        verify.putExtra("verify_service", services[serviceIndex])
-        verify.putExtra("verify_operator", if(serviceIndex==2) billOperators[billOperatorIndex] else operators[operatorIndex])
-        verify.putExtra("verify_recipient", pendingPaymentRecipient.orEmpty())
-        verify.putExtra("verify_amount", pendingPaymentAmount.orEmpty())
-        verify.putExtra("verify_started_at", submissionStartedAt)
-        verify.putExtra("verify_package", selectedPackageLabel.orEmpty())
-        startActivity(verify)
-    }
-
-    // A separate native confirmation is required for Faseyha's own modal.
-    // The final provider modal must be present, visible, uniquely actionable and
-    // contain the originally reviewed recipient, operator and amount.
-    // The user authorized this exact transaction once on our native review.
-    // Provider's later confirmation is accepted only when all details still match.
-    private fun showSecondStageConfirmation(providerText:String, buttonLabel:String) {
-        val target=pendingPaymentRecipient ?: return
-        val action=pendingPaymentAction ?: return
-        val money=pendingPaymentAmount
-        if(!submissionAttempted || approvedSummary==null ||
-            !isTrusted() || Uri.parse(web.url ?: "").path!=selectedPath()) {
-            state.text="Provider confirmation cannot be safely matched. Review Wallet; do not retry."
-            return
-        }
-        val normalized=providerText.replace(Regex("\\s+")," ")
-        if(!normalized.replace(Regex("[^0-9]"),"").contains(target.filter(Char::isDigit))) {
-            state.text="Provider recipient changed. Confirmation stopped; check Wallet."
-            return
-        }
-        val op=if(serviceIndex==2)billOperators[billOperatorIndex] else operators[operatorIndex]
-        if(!normalized.contains(op,ignoreCase=true)) {
-            state.text="Provider operator changed. Confirmation stopped; check Wallet."
-            return
-        }
-        val totalMatch=Regex("total\\s+to\\s+pay\\s*(?:MVR|Rf|ރ)?\\s*([0-9,]+(?:\\.[0-9]{1,2})?)",
-            RegexOption.IGNORE_CASE).find(normalized)
-        val total=totalMatch?.groupValues?.get(1)?.replace(",","")?.toBigDecimalOrNull()
-        val approvedTotal=if(money!=null) money.toBigDecimalOrNull()
-            else selectedPackagePrice?.replace(",","")?.toBigDecimalOrNull()
-        // Never silently accept an unknown price or a modified provider total.
-        if(total==null || approvedTotal==null || total.compareTo(approvedTotal)!=0) {
-            state.text="Provider final total differs or is unavailable. Nothing confirmed. Review website and Wallet."
-            return
-        }
-        state.text="Provider confirmation matches your authorization. Submitting once, then verifying."
-        pressSecondStageConfirmation(target,money,buttonLabel)
-    }
-
-    private fun pressSecondStageConfirmation(target:String,money:String?,expectedLabel:String) {
-        val action=pendingPaymentAction ?: return
-        if(!submissionAttempted || !isTrusted() || Uri.parse(web.url ?: "").path!=selectedPath()
-            || number.text.toString().trim()!=target ||
-            (money!=null && amount.text.toString().trim().toBigDecimalOrNull()!=money.toBigDecimalOrNull())) {
-            message("Request changed. Final confirmation cancelled; check Wallet.");return
-        }
-        val op=if(serviceIndex==2)billOperators[billOperatorIndex] else operators[operatorIndex]
-        val js="""(function(target,operatorName,action,expectedLabel){
-           if(location.protocol!=='https:'||location.hostname!=='faseyha.net'||location.pathname!==__PATH__)
-               return JSON.stringify({ok:false,reason:'Provider page changed'});
-           const tidy=x=>(x||'').replace(/\s+/g,' ').trim();
-           const shown=x=>x.getClientRects().length>0 && getComputedStyle(x).visibility!=='hidden';
-           const heading=action==='Recharge'?/^confirm recharge$/i:
-                action==='Pay'?/^confirm (?:bill )?pay(?:ment)?$/i:/^confirm (?:package|activation)$/i;
-           // The provider's final modal may not have semantic heading tags.
-           // Select only one visible, enabled exact confirmation control.
-           const buttons=Array.from(document.querySelectorAll('button,[role="button"],input[type="submit"]')).filter(shown);
-           const label=b=>tidy(b.innerText||b.value||b.getAttribute('aria-label')||b.textContent);
-           const positives=buttons.filter(b=>label(b)===expectedLabel&&!b.disabled
-              &&b.getAttribute('aria-disabled')!=='true'&&getComputedStyle(b).pointerEvents!=='none');
-           let found=[];
-           if(positives.length===1){
-              let p=positives[0].parentElement;
-              for(let depth=0;p&&depth<9;depth++,p=p.parentElement){
-                  const summary=tidy(p.innerText||'');
-                  if(summary.length>1200)break;
-                  const siblings=Array.from(p.querySelectorAll('button,[role="button"],input[type="submit"]')).filter(shown);
-                  const totalMatch=summary.match(/total\s+to\s+pay\s*(?:MVR|Rf|ރ)?\s*([0-9,]+(?:\.[0-9]{1,2})?)/i);
-                  const providerTotal=totalMatch?Number(totalMatch[1].replace(/,/g,'')):NaN;
-                  if(siblings.some(b=>/^(cancel|back|close|no)$/i.test(label(b)))
-                     &&summary.replace(/[^0-9]/g,'').includes(target.replace(/[^0-9]/g,''))
-                     &&summary.toLowerCase().includes(operatorName.toLowerCase())
-                     &&(__MONEY__===''||(Number.isFinite(providerTotal)&&providerTotal===Number(__MONEY__)))
-                     &&/confirm\s+(?:recharge|payment|bill|activation)/i.test(summary)){
-                     found=[positives[0]];break;
-                  }
-              }
-           }
-           found=[...new Set(found)];
-           if(found.length!==1)return JSON.stringify({ok:false,reason:'Provider confirmation missing, changed or ambiguous. Review the website; do not retry blindly.'});
-           window.__haluviBeforeSubmit=(document.body.innerText||'').split(/\n/).map(x=>x.trim()).filter(Boolean);
-           try{sessionStorage.setItem('haluvi_before_submit',JSON.stringify(window.__haluviBeforeSubmit));}catch(e){}
-           found[0].click();
-           return JSON.stringify({ok:true});
-        })(__TARGET__,__OP__,__ACTION__,__LABEL__);"""
-            .replace("__PATH__",JSONObject.quote(selectedPath()))
-            .replace("__TARGET__",JSONObject.quote(target))
-            .replace("__OP__",JSONObject.quote(op))
-            .replace("__ACTION__",JSONObject.quote(action))
-            .replace("__MONEY__",JSONObject.quote(money ?: selectedPackagePrice ?: ""))
-            .replace("__LABEL__",JSONObject.quote(expectedLabel))
-        web.evaluateJavascript(js){raw->
-            try{
-                val obj=JSONObject(org.json.JSONArray("[$raw]").getString(0))
-                if(obj.optBoolean("ok")){
-                    observingProviderResult=true
-                    providerResultNoticeShown=false
-                    state.text="Final provider confirmation pressed once. Checking actual Faseyha response. Do not retry."
-                    web.postDelayed({checkProviderResult(0)},750)
-                } else {
-                    state.text=obj.optString("reason")
-                    message(state.text.toString())
-                }
-            }catch(_:Exception){message("Final confirmation outcome uncertain. Check Faseyha Wallet before retrying.")}
-        }
-    }
-
-    private fun applyOperator(showDialog: Boolean = true) {
-        if (!isTrusted() || Uri.parse(web.url ?: "").path != selectedPath()) {
-            message("Open the selected Faseyha service page before choosing an operator.")
-            return
-        }
-        val name = if (serviceIndex == 2) billOperators[billOperatorIndex] else operators[operatorIndex]
-        run {
-                val js = """(function(name){
-                   const visible=x=>x.getClientRects().length>0 && getComputedStyle(x).visibility!=='hidden';
-                   const normalized=t=>(t||'').replace(/\s+/g,' ').trim().toLowerCase();
-                   const expected=normalized(name);
-                   const nodes=Array.from(document.querySelectorAll('button,[role="tab"],[role="radio"],[role="button"],label,input[type="radio"]'))
-                       .filter(visible).filter(x=>!x.disabled);
-                   const label=x=>normalized([x.getAttribute('aria-label'),x.getAttribute('title'),
-                      x.innerText,x.getAttribute('value')].filter(Boolean).join(' '));
-                   const safe=x=>!/(pay|recharge now|activate|submit|purchase|checkout|confirm)/.test(label(x));
-                   const matches=nodes.filter(x=>safe(x) && (label(x)===expected ||
-                        label(x)===expected+' raastas' || label(x)===expected+' reload'));
-                   if(matches.length!==1) return JSON.stringify({ok:false,reason:'Found '+matches.length+' exact matching operator controls. Select operator manually on website if none or ambiguous.'});
-                   matches[0].click();
-                   return JSON.stringify({ok:true,reason:'Operator control activated. Verify operator selection in the actual provider order summary.'});
-                 })(${JSONObject.quote(name)});"""
-                web.evaluateJavascript(js) { raw ->
-                    try {
-                        val result = JSONObject(org.json.JSONArray("[$raw]").getString(0))
-                        state.text = if (result.optBoolean("ok")) "Operator selection requested. Verify the operator in the Faseyha order summary." else result.optString("reason")
-                        if (pendingPreparation && !showDialog) {
-                            pendingPreparation = false
-                            if (result.optBoolean("ok")) {
-                                state.text = "Operator selected. Preparing provider form…"
-                                web.postDelayed({ if(isTrusted() && Uri.parse(web.url ?: "").path==selectedPath()) prepareWhenReady(0) },1100)
-                            } else message("Operator selection was not confirmed. No form or payment submitted. Select the operator on the website and tap Continue again.")
-                        } else if (showDialog || !result.optBoolean("ok")) message(state.text.toString())
-                    } catch (_: Exception) { message("Operator selection could not be confirmed. Inspect the provider page manually.") }
-                }
-            }
-    }
-
-    private fun clearPackageSelection() {
-        selectedPackageLabel = null
-        selectedPackagePrice = null
-        if (::packageChoice.isInitialized) {
-            packageChoice.text = "Package: Not selected. Choose package"
-            packageChoice.contentDescription = "Package not selected. Choose package."
-        }
-        if (::packageCategory.isInitialized) {
-            packageCategory.text = "Package category: All. Choose category"
-            packageCategory.contentDescription = "Package category, selected All. Choose category."
-        }
-    }
-
-    private fun inspectPackageSummary() {
-        if (serviceIndex != 1 || !isTrusted() || Uri.parse(web.url ?: "").path != "/packages") {
-            state.text = "Opening Package Recharge. Choose package again when the website loads."
-            openFaseyhaPath("/packages")
-            return
-        }
-        val js = """(function(){
-          const visible=x=>x.getClientRects().length>0 && getComputedStyle(x).visibility!=='hidden';
-          const tidy=t=>(t||'').replace(/\s+/g,' ').trim();
-          const nodes=Array.from(document.querySelectorAll('button,[role="option"],[role="radio"],[role="button"],label,article,[class*="package"],[class*="Package"]'));
-          const raw=nodes.filter(visible).map(x=>tidy(x.innerText||x.getAttribute('aria-label')||''))
-            .filter(s=>s.length>=12 && s.length<=260 && /\b(gb|mb|data|minutes|days|package)\b/i.test(s))
-            .filter(s=>!/(activate package|purchase now|confirm payment|pay now|checkout)/i.test(s));
-          const unique=raw.filter((v,i,a)=>a.indexOf(v)===i).slice(0,160);
-          const items=unique.map(s=>{
-              const first=s.match(/^(.*?)(?=\s+(?:special offer|(?:\d+(?:\.\d+)?\s*(?:gb|mb|days))))/i);
-              const title=(first?first[1]:s.split(/SPECIAL OFFER| \d+\s*(?:GB|MB)\s*\/day/i)[0]).trim().slice(0,85)||s.slice(0,85);
-              const prices=[...s.matchAll(/(?:MVR|Rf|ރ)?\s*([\d,]+(?:\.\d{1,2})?)\s*incl\.?\s*GST/gi)];
-              const price=prices.length?prices[prices.length-1][1]:'';
-              return {title:title,text:s,price:price};
-          });
-          return JSON.stringify({items:items});
-        })();"""
-        web.evaluateJavascript(js) { raw ->
-            try {
-                val obj = JSONObject(org.json.JSONArray("[$raw]").getString(0))
-                val arr = obj.getJSONArray("items")
-                if (arr.length() == 0) {
-                    message("No package cards were identified. Check operator and category on Faseyha's site.")
-                    return@evaluateJavascript
-                }
-                val names = Array(arr.length()) { i ->
-                    val item = arr.getJSONObject(i)
-                    item.optString("title") + (if (item.optString("price").isNotBlank()) ", MVR " + item.optString("price") + " including GST" else "")
-                }
-                AlertDialog.Builder(this).setTitle("Choose package — " + operators[operatorIndex])
-                    .setItems(names) { _, index ->
-                        val item=arr.getJSONObject(index)
-                        selectPackageCard(item.optString("text"))
-                    }.setNegativeButton("Cancel", null).show()
-            } catch (_: Exception) { message("Unable to read available packages. Choose on provider website.") }
-        }
-    }
-
-    private fun choosePackageGroup(groups:Array<String>) {
-        AlertDialog.Builder(this).setTitle("Faseyha package category")
-            .setItems(groups){_,index->
-                if(!isTrusted() || Uri.parse(web.url ?: "").path!="/packages"){
-                    message("Open the Faseyha Packages page first.")
-                    return@setItems
-                }
-                val js="""(function(wanted){
-                   const tidy=x=>(x||'').replace(/\s+/g,' ').trim().toLowerCase();
-                   const shown=x=>x.getClientRects().length>0 && getComputedStyle(x).visibility!=='hidden';
-                   const nodes=Array.from(document.querySelectorAll('button,[role="tab"],[role="button"]')).filter(shown).filter(x=>!x.disabled);
-                   const match=nodes.filter(x=>tidy(x.innerText||x.getAttribute('aria-label'))===tidy(wanted));
-                   if(match.length!==1) return JSON.stringify({ok:false,reason:'Category not unique; select on the website.'});
-                   match[0].click();
-                   return JSON.stringify({ok:true,reason:'Category selected. Browse packages to review current results.'});
-                })(__GROUP__);""".replace("__GROUP__",JSONObject.quote(groups[index]))
-                web.evaluateJavascript(js){raw->
-                    try {
-                        val result=JSONObject(org.json.JSONArray("[$raw]").getString(0))
-                        if (result.optBoolean("ok")) {
-                            clearPackageSelection()
-                            packageCategory.text = "Package category: " + groups[index] + ". Choose category"
-                            packageCategory.contentDescription = "Package category, selected " + groups[index] + ". Choose category."
-                        }
-                        state.text = result.optString("reason") + " No package activated."
-                    }catch (_:Exception){message("Could not confirm category selection.")}
-                }
-            }.setNegativeButton("Cancel",null).show()
-    }
-
-    private fun selectPackageCard(label: String) {
-        if (!isTrusted() || Uri.parse(web.url ?: "").path != "/packages") {
-            message("Open Packages to select a provider package.")
-            return
-        }
-        val js = """(function(wanted){
-            const tidy=t=>(t||'').replace(/\s+/g,' ').trim();
-            const visible=x=>x.getClientRects().length>0 && getComputedStyle(x).visibility!=='hidden';
-            const nodes=Array.from(document.querySelectorAll('button,[role="option"],[role="radio"],[role="button"],label,article,[class*="package"],[class*="Package"]'));
-            const match=nodes.filter(visible).filter(x=>tidy(x.innerText||x.getAttribute('aria-label')||'')===wanted)
-                .filter(x=>!/(activate package|pay now|checkout|confirm payment|purchase now)/i.test(tidy(x.innerText)));
-            if(match.length!==1) return JSON.stringify({ok:false,reason:'Ambiguous package card. Select on Faseyha website.'});
-            const node=match[0];
-            if(node.matches('form,[type="submit"],a[href]') || node.querySelector('button[type="submit"],a[href*="checkout"]'))
-                return JSON.stringify({ok:false,reason:'Potential submit control. Selection blocked.'});
-            node.click();
-            return JSON.stringify({ok:true});
-        })(__LABEL__);""".replace("__LABEL__",JSONObject.quote(label))
-        web.evaluateJavascript(js) { raw ->
-            try {
-                val result=JSONObject(org.json.JSONArray("[$raw]").getString(0))
-                if (!result.optBoolean("ok")) {
-                    message(result.optString("reason","Package selection unavailable."))
-                    return@evaluateJavascript
-                }
-                web.postDelayed({
-                    if (!isTrusted() || Uri.parse(web.url ?: "").path != "/packages") return@postDelayed
-                    val verify = """(function(){
-                        const text=(document.body.innerText||'');
-                        const i=text.lastIndexOf('Order summary');
-                        if(i<0) return JSON.stringify({ok:false,reason:'Order summary unavailable.'});
-                        const summary=text.slice(i,i+650).replace(/\s+/g,' ').trim();
-                        return JSON.stringify({ok:/\bpackage\b/i.test(summary)&&/total/i.test(summary),summary:summary});
-                    })();"""
-                    web.evaluateJavascript(verify){v->
-                        try {
-                            val parsed=JSONObject(org.json.JSONArray("[$v]").getString(0))
-                            if (!parsed.optBoolean("ok")) {
-                                message("Package control was selected but provider summary is not ready. Check website manually.")
-                                return@evaluateJavascript
-                            }
-                            selectedPackageLabel=label.take(90)
-                            val prices=Regex("""([\d,]+(?:\.\d{1,2})?)\s*incl\.?\s*GST""", RegexOption.IGNORE_CASE).findAll(label).toList()
-                            selectedPackagePrice=prices.lastOrNull()?.groupValues?.get(1)
-                            val shortName=label.substringBefore(" SPECIAL OFFER",label).take(50)
-                            val price=selectedPackagePrice
-                            packageChoice.text = "Package: " + shortName + (if (price.isNullOrBlank()) "" else ", MVR " + price) + ". Change"
-                            packageChoice.contentDescription = packageChoice.text
-                            state.text = "Package applied to provider. Review the actual Faseyha summary before paying."
-                        } catch (_:Exception) {message("Unable to verify provider package selection.") }
-                    }
-                },350)
-            } catch (_:Exception) {message("Unable to select package on Faseyha.")}
-        }
-    }
-
-    private fun readOrderSummary() {
-        if (!isTrusted() || Uri.parse(web.url ?: "").path != selectedPath()) {
-            message("Open the selected Faseyha service page and its order summary first.")
-            return
-        }
-        val js = """(function(){
-          const txt=(document.body.innerText||'');
-          const index=txt.toLowerCase().lastIndexOf('order summary');
-          if(index<0) return JSON.stringify({found:false});
-          const part=txt.slice(index,index+1500).replace(/\s+/g,' ').trim();
-          return JSON.stringify({found:true,summary:part.slice(0,900)});
-        })();"""
-        web.evaluateJavascript(js) { raw ->
-            try {
-                val obj = JSONObject(org.json.JSONArray("[$raw]").getString(0))
-                if (!obj.optBoolean("found")) message("No readable order summary is visible on this provider page.")
-                else message("Faseyha website order summary (not a transaction result):\n" + obj.optString("summary") + "\n\nVerify operator, recipient, selected product, tax and total on the provider page. Do not rely on this text alone to authorize payment.")
-            } catch (_: Exception) { message("Unable to read the provider order summary.") }
-        }
-    }
-
-    private fun findHistory() {
-        if (!isTrusted()) { message("Open Faseyha first."); return }
-        val js="""(function(){
-          const links=Array.from(document.querySelectorAll('a[href]')).map(x=>({
-             title:(x.innerText||x.getAttribute('aria-label')||'').replace(/\s+/g,' ').trim().slice(0,80),
-             url:x.href
-          })).filter(x=>{
-             try{const u=new URL(x.url);return u.protocol==='https:' &&
-               (u.hostname==='faseyha.net'||u.hostname.endsWith('.faseyha.net')) &&
-               /history|transaction|activity|orders|receipts/i.test(u.pathname+' '+x.title);}
-             catch(e){return false;}
-          }).filter((v,i,a)=>a.findIndex(w=>w.url===v.url)===i).slice(0,20);
-          return JSON.stringify({links:links});
-        })();"""
-        web.evaluateJavascript(js){raw->
-            try {
-                val arr=JSONObject(org.json.JSONArray("[$raw]").getString(0)).getJSONArray("links")
-                if(arr.length()==0){
-                    message("No visible history link on this page. Open the Faseyha website menu or dashboard, then search again. No history address was guessed.")
-                    return@evaluateJavascript
-                }
-                val labels=Array(arr.length()){i->
-                    val o=arr.getJSONObject(i)
-                    o.optString("title").ifBlank{"History"}+" — "+Uri.parse(o.getString("url")).path
-                }
-                AlertDialog.Builder(this).setTitle("Faseyha history links")
-                  .setItems(labels){_,i->
-                    val url=arr.getJSONObject(i).getString("url")
-                    val uri=Uri.parse(url)
-                    if(uri.scheme=="https" && trusted(uri.host)){
-                        AlertDialog.Builder(this).setTitle("Open provider history?")
-                          .setMessage("Navigate to "+uri.path+" using the saved website session? This application will not automatically approve any transaction.")
-                          .setPositiveButton("Open"){_,_->web.loadUrl(url)}
-                          .setNegativeButton("Cancel",null).show()
-                    }else message("History link is outside allowed website.")
-                  }.setNegativeButton("Close",null).show()
-            }catch (_:Exception){message("Unable to inspect Faseyha history links.")}
-        }
-    }
-
-    private fun inspectResult() {
-        if(!isTrusted()){message("Open the provider transaction result page first.");return}
-        val js="""(function(){
-          const lines=(document.body.innerText||'').split(/\n/).map(x=>x.replace(/\s+/g,' ').trim()).filter(Boolean);
-          const selected=lines.filter(x=>x.length<=180 &&
-             /\b(submitted|processing|pending|successful|completed|confirmed|failed|declined|cancelled|reference|receipt)\b/i.test(x)).slice(0,20);
-          return JSON.stringify({path:location.pathname,lines:selected});
-        })();"""
-        web.evaluateJavascript(js){raw->
-            try{
-                val obj=JSONObject(org.json.JSONArray("[$raw]").getString(0))
-                val lines=obj.getJSONArray("lines")
-                val text=StringBuilder("Visible Faseyha status text on "+obj.optString("path")+":\n")
-                if(lines.length()==0)text.append("No recognized status message found.")
-                for(i in 0 until lines.length())text.append("\n"+(i+1)+". "+lines.getString(i))
-                text.append("\n\nSubmitted or processing does not independently establish final delivery. Check Faseyha history and recipient before retrying. Local record statuses remain user-reported.")
-                message(text.toString())
-            }catch (_:Exception){message("Could not read a provider status message. Check transaction history directly.")}
-        }
-    }
-
-    private fun showTestGuide() {
-        val guide = "For a first real transaction, use only a number or account you control and an amount you choose within Faseyha's minimum and available wallet balance.\n\n" +
-            "1. Select Bill Pay, Recharge, or Package Recharge and open the correct provider page.\n" +
-            "2. For Recharge choose the correct operator; for Packages choose the exact package on the provider site.\n" +
-            "3. Enter the target and amount for Recharge/Bill Pay. For packages enter only the recipient; choose the actual package and price in the Faseyha website. Prepare only when the website exposes matching fields.\n" +
-            "4. Confirm target, operator, product, actual provider price and possible fees on the Faseyha website.\n" +
-            "5. Press the WEBSITE Pay button yourself only if you approve the real transaction.\n" +
-            "6. If there is a confirmation or verification step, complete it personally. Check the provider receipt and final status.\n" +
-            "7. Return to Transaction records and review and save a manual observation or receipt reference.\n\n" +
-            "Never retry an uncertain payment without checking Faseyha's history and actual recipient delivery. Local notes are not independently verified success."
-        message(guide)
-    }
-
-    private fun inspectChoices() {
-        if (!isTrusted()) { message("Open a Faseyha page to inspect its service choices."); return }
-        val script = """(function(){
-          const visible=x=>x.getClientRects().length>0;
-          const controls=Array.from(document.querySelectorAll('select,option,button,[role="button"],[role="option"],[role="combobox"],input[type=radio]'))
-            .filter(visible).filter(x=>!x.closest('input[type=password]')).slice(0,65)
-            .map(x=>({kind:x.tagName.toLowerCase(),label:(x.getAttribute('aria-label')||x.innerText||x.getAttribute('title')||'').trim().slice(0,90)}))
-            .filter(x=>x.label.length>0);
-          return JSON.stringify({path:location.pathname.slice(0,90),controls:controls});
-        })();"""
-        web.evaluateJavascript(script) { raw ->
-            try {
-                val result = JSONObject(org.json.JSONArray("[$raw]").getString(0))
-                val controls = result.getJSONArray("controls")
-                val lines = StringBuilder("Service page: " + result.optString("path") + "\nVisible selection controls: " + controls.length())
-                for (i in 0 until controls.length()) {
-                    val o = controls.getJSONObject(i)
-                    lines.append("\n" + (i + 1) + ". " + o.optString("kind") + ": " + o.optString("label"))
-                }
-                lines.append("\n\nThis only inspects labels. It does not activate controls, submit transactions or inspect private payment data. Choose the operator or package on the website itself.")
-                message(lines.toString())
-            } catch (_: Exception) { message("Could not inspect service choices. Open the actual provider form and try again.") }
-        }
-    }
-
-    private fun showRecords() {
-        val rows = FaseyhaLedger.list(this)
-        if (rows.length() == 0) {
-            message("No transaction preparations recorded yet. These records do not prove a payment.")
-            return
-        }
-        val labels = Array(rows.length()) { index ->
-            val r = rows.getJSONObject(index)
-            r.optString("service") + " — " + r.optString("target") +
-                " — MVR " + r.optString("amount") + " — " + r.optString("status")
-        }
-        AlertDialog.Builder(this).setTitle("Local preparation and review history")
-            .setItems(labels) { _, selected -> showRecord(rows.getJSONObject(selected).optString("id")) }
-            .setNeutralButton("Clear records") { _, _ ->
-                AlertDialog.Builder(this).setTitle("Clear all local records?")
-                    .setMessage("This only deletes local notes, not provider transaction history.")
-                    .setPositiveButton("Delete") { _, _ -> FaseyhaLedger.clear(this) }
-                    .setNegativeButton("Cancel", null).show()
-            }.setNegativeButton("Close", null).show()
-    }
-
-    private fun showRecord(id: String) {
-        val rows = FaseyhaLedger.list(this)
-        var record: JSONObject? = null
-        for (i in 0 until rows.length()) {
-            val item = rows.getJSONObject(i)
-            if (item.optString("id") == id) { record = item; break }
-        }
-        if (record == null) { message("Record was not found."); return }
-        val details = record.optString("service") + "\nTarget: " + record.optString("target") +
-            "\nMVR " + record.optString("amount") + "\nStatus: " + record.optString("status") +
-            "\nNote: " + record.optString("note") +
-            "\n\nThis record contains only local preparation and user-reported observations. It is not provider-confirmed payment evidence."
-        AlertDialog.Builder(this).setTitle("Faseyha transaction record").setMessage(details)
-            .setPositiveButton("Update observation") { _, _ -> updateRecord(id) }
-            .setNeutralButton("Delete record") { _, _ ->
-                AlertDialog.Builder(this).setTitle("Delete this local record?")
-                    .setPositiveButton("Delete") { _, _ -> FaseyhaLedger.delete(this, id) }
-                    .setNegativeButton("Cancel", null).show()
-            }.setNegativeButton("Close", null).show()
-    }
-
-    private fun updateRecord(id: String) {
-        val options = arrayOf("Prepared", "User reports submitted", "Needs review", "User reports completed", "User reports failed")
-        AlertDialog.Builder(this).setTitle("Choose observed status")
-            .setItems(options) { _, choice ->
-                val note = EditText(this).apply {
-                    hint = "Optional receipt reference or note. Never include a password."
-                    inputType = InputType.TYPE_CLASS_TEXT
-                    setSingleLine(false)
-                    maxLines = 3
-                }
-                AlertDialog.Builder(this).setTitle(options[choice])
-                    .setMessage("Manual note only. No provider status has been verified; do not use this as proof of successful HaluviPay fulfillment.")
-                    .setView(note)
-                    .setPositiveButton("Save observation") { _, _ ->
-                        if (FaseyhaLedger.update(this, id, options[choice], note.text.toString().trim()))
-                            message("Saved locally as a user-reported observation, not a verified provider result.")
-                        else message("Could not save the observation.")
-                    }.setNegativeButton("Cancel", null).show()
             }.setNegativeButton("Cancel", null).show()
     }
 
-    override fun onBackPressed() {
-        if (::web.isInitialized && web.canGoBack()) web.goBack() else super.onBackPressed()
+    private fun chooseCategory() {
+        if (stage == Stage.DONE) { whenPreviousSettled { resetTransaction(); chooseCategory() }; return }
+        if (stage != Stage.IDLE) { notice("Finish or cancel the current payment first."); return }
+        say("Reading Faseyha package categories…")
+        val token = generation
+        ensurePage {
+            form.eval(FaseyhaSite.CATEGORIES) { r ->
+                if (token != generation) return@eval
+                val list = r?.optJSONArray("categories")
+                if (list == null || list.length() == 0) {
+                    say("Faseyha did not show package categories. All packages can still be chosen.")
+                    return@eval
+                }
+                val names = Array(list.length()) { list.getString(it) }
+                AlertDialog.Builder(this).setTitle("Package category")
+                    .setItems(names) { _, i ->
+                        applyCategory(names[i], token) { ok ->
+                            if (ok) {
+                                category = names[i]
+                                chosenPackage = null
+                                updateSelections()
+                                say("Category ${names[i]} selected. Now choose a package.")
+                            } else say("Faseyha did not accept the ${names[i]} category.")
+                        }
+                    }.setNegativeButton("Cancel", null).show()
+                say("Choose a package category.")
+            }
+        }
     }
+
+    private fun choosePackage() {
+        if (stage == Stage.DONE) { whenPreviousSettled { resetTransaction(); choosePackage() }; return }
+        if (stage != Stage.IDLE) { notice("Finish or cancel the current payment first."); return }
+        say("Reading Faseyha packages…")
+        val token = generation
+        ensurePage {
+            val cat = category
+            if (cat != null && pageCategory != cat) applyCategory(cat, token) { ok ->
+                if (ok) listPackages(token, 0) else say("Faseyha did not accept the $cat category.")
+            } else listPackages(token, 0)
+        }
+    }
+
+    private fun listPackages(token: Int, attempt: Int) {
+        form.eval(FaseyhaSite.PACKAGES) { r ->
+            if (token != generation) return@eval
+            val items = r?.optJSONArray("items") ?: JSONArray()
+            if (items.length() == 0) {
+                if (attempt < 6) form.after(600) { listPackages(token, attempt + 1) }
+                else say("Faseyha did not show any packages for ${service.operator}.")
+                return@eval
+            }
+            val choices = (0 until items.length()).map { i ->
+                val o = items.getJSONObject(i)
+                PackageChoice(o.optString("text"), o.optString("title"), FaseyhaRules.money(o.optString("price")))
+            }
+            val names = choices.map { c -> c.title + (c.price?.let { ", MVR ${FaseyhaRules.format(it)} including GST" } ?: "") }
+            AlertDialog.Builder(this).setTitle("Choose ${service.operator} package")
+                .setItems(names.toTypedArray()) { _, i ->
+                    val choice = choices[i]
+                    say("Selecting ${choice.title} on Faseyha…")
+                    selectPackage(choice, token, 0) { ok, reason ->
+                        if (ok) {
+                            chosenPackage = choice
+                            updateSelections()
+                            say("Package selected: ${choice.title}. Enter the mobile number and press Continue.")
+                        } else say(reason)
+                    }
+                }.setNegativeButton("Cancel", null).show()
+            say("Choose a package.")
+        }
+    }
+
+    // ---------- hidden Faseyha page ----------
+
+    private fun openService() {
+        pageReadyFor = null
+        say("Opening Faseyha ${service.label}…")
+        ensurePage { if (stage == Stage.IDLE) say("Ready. Enter the details and press Continue.") }
+    }
+
+    /** Runs [then] once the hidden page shows this service with its operator selected. */
+    private fun ensurePage(then: () -> Unit) {
+        if (form.path == service.kind.path && pageReadyFor == service) { then(); return }
+        afterLoad = then
+        val token = generation
+        form.open(service.kind.path)
+        form.after(15_000) {
+            if (token == generation && afterLoad === then) {
+                afterLoad = null
+                stepFailed("Faseyha did not open ${service.label}. Check the connection or sign in again.")
+            }
+        }
+    }
+
+    private fun onFormLoaded(url: String) {
+        pageReadyFor = null
+        pageCategory = null
+        pagePackage = null
+        val t = txn
+        if (stage == Stage.SUBMITTED && t != null) {
+            // Faseyha moved to a result page after the button press: keep reading the result.
+            form.after(700) { pollResult(t, ++t.chain, 0) }
+            return
+        }
+        val next = afterLoad ?: return
+        val token = generation
+        form.eval(FaseyhaSite.SIGNED_OUT) { r ->
+            if (token != generation || afterLoad !== next) return@eval
+            val path = FaseyhaSite.pathOf(url)
+            if (r?.optBoolean("signedOut") == true || path == null) { afterLoad = null; handleSignedOut(); return@eval }
+            if (path != service.kind.path) {
+                // An intermediate page; the timeout in ensurePage reports a stuck redirect.
+                return@eval
+            }
+            afterLoad = null
+            applyOperator(token, 0, next)
+        }
+    }
+
+    private fun applyOperator(token: Int, attempt: Int, then: () -> Unit) {
+        form.eval(FaseyhaSite.applyOperator(service.operator)) { r ->
+            if (token != generation) return@eval
+            if (r?.optBoolean("ok") == true) {
+                pageReadyFor = service
+                form.after(if (r.optBoolean("clicked")) 900 else 150) { if (token == generation) then() }
+            } else if (attempt < 16) {
+                form.after(500) { applyOperator(token, attempt + 1, then) }
+            } else stepFailed(r?.optString("reason")?.ifBlank { null } ?: "Faseyha did not show the ${service.operator} option.")
+        }
+    }
+
+    private fun applyCategory(name: String, token: Int, attempt: Int = 0, done: (Boolean) -> Unit) {
+        form.eval(FaseyhaSite.applyCategory(name)) { r ->
+            if (token != generation) return@eval
+            if (r?.optBoolean("ok") == true) { pageCategory = name; form.after(700) { if (token == generation) done(true) } }
+            else if (attempt < 6) form.after(500) { applyCategory(name, token, attempt + 1, done) }
+            else done(false)
+        }
+    }
+
+    private fun selectPackage(choice: PackageChoice, token: Int, attempt: Int, done: (Boolean, String) -> Unit) {
+        form.eval(FaseyhaSite.selectPackage(choice.text)) { r ->
+            if (token != generation) return@eval
+            if (r?.optBoolean("ok") != true) {
+                if (attempt < 6) form.after(500) { selectPackage(choice, token, attempt + 1, done) }
+                else done(false, (r?.optString("reason")?.ifBlank { null } ?: "Faseyha did not accept the package.") + " Nothing was paid.")
+                return@eval
+            }
+            fun check(n: Int) {
+                form.eval(FaseyhaSite.packageSummary("")) { s ->
+                    if (token != generation) return@eval
+                    if (s != null && s.optBoolean("hasPackage") && s.optBoolean("hasTotal")) { pagePackage = choice.text; done(true, "") }
+                    else if (n < 6) form.after(400) { check(n + 1) }
+                    else done(false, "Faseyha did not show an order summary for this package. Nothing was paid.")
+                }
+            }
+            form.after(400) { check(0) }
+        }
+    }
+
+    // ---------- preparation ----------
+
+    private fun startPreparation() {
+        when (stage) {
+            Stage.SUBMITTED, Stage.VERIFYING -> { say("The last payment is still being checked. Please wait."); return }
+            Stage.PREPARING, Stage.REVIEW -> return
+            else -> Unit
+        }
+        val kind = service.kind
+        val recipient = FaseyhaRules.cleanRecipient(kind, number.text.toString())
+        if (recipient == null) {
+            number.error = if (kind == Kind.BILL) "Enter the account or service number, letters and digits only"
+                else "Enter a seven-digit Maldives mobile number"
+            number.requestFocus(); return
+        }
+        number.setText(recipient)
+        var money: BigDecimal? = null
+        if (kind == Kind.PACKAGE) {
+            if (chosenPackage == null) { notice("Choose a package first."); return }
+        } else {
+            money = FaseyhaRules.validAmount(amount.text.toString())
+            if (money == null) {
+                amount.error = "Enter a positive amount with at most two decimal places"
+                amount.requestFocus(); return
+            }
+        }
+        txn = Txn(service, recipient, money, chosenPackage?.title, balance)
+        stage = Stage.PREPARING
+        generation++
+        val token = generation
+        resultActions.visibility = View.GONE
+        continueButton.isEnabled = false
+        say("Preparing ${service.label} for $recipient…")
+        if (kind != Kind.PACKAGE) pageReadyFor = null // start from a fresh form
+        ensurePage {
+            if (token != generation) return@ensurePage
+            if (kind == Kind.PACKAGE) preparePackage(token) else fillForm(token, 0, false)
+        }
+    }
+
+    private fun preparePackage(token: Int) {
+        val choice = chosenPackage ?: run { stepFailed("Choose a package first."); return }
+        val cat = category
+        if (cat != null && pageCategory != cat) {
+            applyCategory(cat, token) { ok -> if (ok) preparePackage(token) else stepFailed("Faseyha did not accept the $cat category.") }
+            return
+        }
+        if (pagePackage != choice.text) {
+            say("Selecting the package on Faseyha…")
+            selectPackage(choice, token, 0) { ok, reason -> if (ok) preparePackage(token) else stepFailed(reason) }
+            return
+        }
+        fillPackageRecipient(token, 0)
+    }
+
+    private fun fillPackageRecipient(token: Int, attempt: Int) {
+        val t = txn ?: return
+        form.eval(FaseyhaSite.fillPackageRecipient(t.recipient)) { r ->
+            if (token != generation) return@eval
+            when {
+                r?.optBoolean("ok") == true -> form.after(500) { readPackageSummary(token, 0) }
+                attempt < 8 && (r?.optInt("count", 0) ?: 0) == 0 -> form.after(600) { fillPackageRecipient(token, attempt + 1) }
+                else -> stepFailed(r?.optString("reason")?.ifBlank { null } ?: "The mobile number could not be entered on Faseyha.")
+            }
+        }
+    }
+
+    private fun readPackageSummary(token: Int, attempt: Int) {
+        val t = txn ?: return
+        form.eval(FaseyhaSite.packageSummary(t.recipient)) { r ->
+            if (token != generation) return@eval
+            if (r != null && r.optBoolean("recipient") && r.optBoolean("hasTotal") && r.optBoolean("hasPackage")) {
+                t.summary = r.optString("summary")
+                val total = FaseyhaRules.labelledTotal(t.summary)
+                if (total == null) stepFailed("Faseyha's order summary does not show a total, so the package was not paid.")
+                else { t.amount = total; showReview(token) }
+            } else if (attempt < 8) form.after(600) { readPackageSummary(token, attempt + 1) }
+            else stepFailed("Faseyha's order summary does not show this package for ${t.recipient}.")
+        }
+    }
+
+    private fun fillForm(token: Int, attempt: Int, lookedUp: Boolean) {
+        val t = txn ?: return
+        form.eval(FaseyhaSite.fill(t.recipient, plain(t.amount), service.kind, lookedUp)) { r ->
+            if (token != generation) return@eval
+            when (r?.optString("stage")) {
+                "filled" -> {
+                    say("Details entered. Waiting for Faseyha to check them…")
+                    form.after(600) { waitReady(token, 0) }
+                }
+                "lookup" -> {
+                    say("Looking up the account on Faseyha…")
+                    form.after(1500) { fillForm(token, attempt + 1, true) }
+                }
+                "provider-amount" -> offerProviderAmount(t, r.optString("providerAmount"))
+                "mismatch", "error" -> stepFailed(r.optString("reason"))
+                else -> if (attempt < 15) form.after(650) { fillForm(token, attempt + 1, lookedUp) }
+                    else stepFailed(r?.optString("reason")?.ifBlank { null } ?: "The Faseyha form did not appear.")
+            }
+        }
+    }
+
+    private fun offerProviderAmount(t: Txn, shown: String) {
+        val due = FaseyhaRules.money(shown)
+        stage = Stage.IDLE
+        continueButton.isEnabled = true
+        if (due == null || due <= BigDecimal.ZERO) { stepFailed("Faseyha shows a fixed amount that could not be read."); return }
+        say("Faseyha shows MVR ${FaseyhaRules.format(due)} for this account. Nothing was paid.")
+        AlertDialog.Builder(this).setTitle("Amount shown by Faseyha")
+            .setMessage("Faseyha shows MVR ${FaseyhaRules.format(due)} for ${t.recipient}. You entered MVR ${FaseyhaRules.format(t.amount)}.")
+            .setPositiveButton("Use MVR ${FaseyhaRules.format(due)}") { _, _ -> amount.setText(plain(due)); startPreparation() }
+            .setNegativeButton("Cancel", null).show()
+    }
+
+    private fun waitReady(token: Int, attempt: Int) {
+        val t = txn ?: return
+        form.eval(FaseyhaSite.ready(t.recipient, plain(t.amount), service.operator, service.kind.action)) { d ->
+            if (token != generation) return@eval
+            val summary = d?.optString("summary").orEmpty()
+            val ready = d != null && (service.kind == Kind.BILL || summary.isNotBlank()) && d.optInt("enabled") == 1 &&
+                d.optBoolean("numberMatch") && d.optBoolean("amountMatch") && d.optBoolean("operatorMatch")
+            when {
+                ready -> { t.summary = summary; showReview(token) }
+                attempt < 19 -> {
+                    if (attempt == 4) say("Waiting for Faseyha to check the account and enable payment…")
+                    form.after(650) { waitReady(token, attempt + 1) }
+                }
+                else -> stepFailed(notReadyReason(d))
+            }
+        }
+    }
+
+    private fun notReadyReason(d: JSONObject?): String {
+        if (d == null) return "Faseyha's page could not be read."
+        val invalid = d.optJSONArray("invalid")
+        val missing = if (invalid != null) (0 until invalid.length()).joinToString(", ") { invalid.optString(it) } else ""
+        return when {
+            !d.optBoolean("numberMatch") || !d.optBoolean("amountMatch") -> "Faseyha did not keep the number or amount."
+            d.optString("summary").isBlank() && service.kind != Kind.BILL -> "Faseyha did not show an order summary for this number."
+            !d.optBoolean("operatorMatch") -> "Faseyha does not show ${service.operator} as the selected operator."
+            missing.isNotBlank() -> "Faseyha needs more information: $missing."
+            d.optInt("found") == 0 -> "Faseyha's ${service.kind.action} button was not found."
+            d.optInt("enabled") == 0 -> "Faseyha's ${service.kind.action} button stays disabled. Faseyha may not accept this account or amount."
+            else -> "Faseyha shows more than one ${service.kind.action} button, so the app stopped."
+        }
+    }
+
+    // ---------- review and submission ----------
+
+    private fun showReview(token: Int) {
+        val t = txn ?: return
+        stage = Stage.REVIEW
+        val amountText = "MVR " + FaseyhaRules.format(t.amount)
+        val details = buildString {
+            append("Service: ${t.service.label}\n")
+            append(if (t.service.kind == Kind.BILL) "Account: " else "Mobile number: ").append(t.recipient).append('\n')
+            t.packageTitle?.let { append("Package: $it\n") }
+            append(if (t.service.kind == Kind.PACKAGE) "Total to pay: " else "Amount: ").append(amountText).append('\n')
+            val due = t.amount
+            balance?.let {
+                append("Wallet balance: MVR ${FaseyhaRules.format(it)}\n")
+                if (due != null && it < due) append("The wallet balance is lower than this amount; Faseyha may refuse it.\n")
+            }
+            if (t.summary.isNotBlank()) append("\nFaseyha order summary:\n").append(t.summary.take(500)).append('\n')
+            append("\nConfirm sends this payment once.")
+        }
+        val confirmLabel = when (t.service.kind) {
+            Kind.RECHARGE -> "Recharge $amountText"
+            Kind.BILL -> "Pay $amountText"
+            Kind.PACKAGE -> "Activate package"
+        }
+        say("Review the details and confirm.")
+        AlertDialog.Builder(this).setTitle("Confirm ${t.service.label}").setMessage(details)
+            .setPositiveButton(confirmLabel) { _, _ -> if (token == generation) checkRepeatThenSubmit(token) }
+            .setNegativeButton("Cancel") { _, _ -> if (token == generation) cancelPreparation("Payment cancelled. Nothing was paid.") }
+            .setCancelable(false).show()
+    }
+
+    private fun checkRepeatThenSubmit(token: Int) {
+        val t = txn ?: return
+        val similar = FaseyhaLedger.recentSimilar(this, t.service.label, t.recipient)
+        if (similar == null) { submit(token); return }
+        val time = DateFormat.getTimeInstance(DateFormat.SHORT).format(Date(similar.optLong("created")))
+        AlertDialog.Builder(this).setTitle("Possible repeat payment")
+            .setMessage("At $time this app already sent ${t.service.label} to ${t.recipient} for MVR ${similar.optString("amount")}. " +
+                "Its status: ${similar.optString("status")}. Pay again?")
+            .setPositiveButton("Pay again") { _, _ -> if (token == generation) submit(token) }
+            .setNegativeButton("Cancel") { _, _ -> if (token == generation) cancelPreparation("Payment cancelled. Nothing was paid.") }
+            .setCancelable(false).show()
+    }
+
+    private fun submit(token: Int) {
+        val t = txn ?: return
+        if (token != generation || stage != Stage.REVIEW || form.path != service.kind.path) {
+            stepFailed("The Faseyha page changed before payment."); return
+        }
+        stage = Stage.SUBMITTED
+        say("Sending to Faseyha…")
+        form.eval(FaseyhaSite.submit(service.kind.path, t.recipient, plain(t.amount), service.operator, service.kind.action, t.summary)) { r ->
+            if (t !== txn) return@eval
+            when {
+                r == null -> {
+                    markSubmitted(t)
+                    say("Faseyha's response could not be read. Checking Wallet; do not pay again.")
+                    startVerification(t)
+                }
+                r.optBoolean("ok") -> {
+                    markSubmitted(t)
+                    say("Payment sent to Faseyha. Waiting for the result; do not pay again.")
+                    form.after(750) { pollResult(t, ++t.chain, 0) }
+                }
+                else -> { stage = Stage.REVIEW; stepFailed(r.optString("reason") + ".") }
+            }
+        }
+    }
+
+    private fun markSubmitted(t: Txn) {
+        t.startedAt = System.currentTimeMillis()
+        t.ledgerId = FaseyhaLedger.create(this, t.service.label, t.recipient, FaseyhaRules.format(t.amount))
+        pageReadyFor = null
+    }
+
+    private fun pollResult(t: Txn, chain: Int, attempt: Int) {
+        if (t !== txn || chain != t.chain || stage != Stage.SUBMITTED) return
+        if (attempt > 35 || !FaseyhaSite.trustedUrl(form.url)) {
+            say("Checking Faseyha Wallet for the result; do not pay again.")
+            startVerification(t); return
+        }
+        form.eval(FaseyhaSite.result(t.recipient, plain(t.amount), service.operator, service.kind.action)) { r ->
+            if (t !== txn || chain != t.chain || stage != Stage.SUBMITTED) return@eval
+            val message = r?.optString("message").orEmpty()
+            when (r?.optString("classification")) {
+                "Awaiting confirmation" ->
+                    if (!t.secondStageDone) secondStage(t, message, r.optString("actionLabel"))
+                    else form.after(900) { pollResult(t, chain, attempt + 1) }
+                "Processing" -> {
+                    t.processingPolls++
+                    if (t.processingPolls == 1) say("Faseyha is processing the payment…")
+                    if (t.processingPolls > 8) startVerification(t) else form.after(1100) { pollResult(t, chain, attempt + 1) }
+                }
+                "Provider accepted payment", "Provider reported success" -> {
+                    t.accepted = true
+                    say("Faseyha accepted ${t.service.label} for ${t.recipient}, MVR ${FaseyhaRules.format(t.amount)}. Confirming in Wallet…")
+                    form.after(2000) { startVerification(t) }
+                }
+                "Insufficient balance" -> finish(t, FaseyhaLedger.FAILED, "Not paid: Faseyha reports insufficient wallet balance.")
+                "Failed" -> finish(t, FaseyhaLedger.FAILED, "Faseyha reported a failure: ${message.take(160)}. Check Wallet before trying again.")
+                else -> form.after(900) { pollResult(t, chain, attempt + 1) }
+            }
+        }
+    }
+
+    /** Faseyha's own confirmation dialog is pressed only when it repeats the reviewed details. */
+    private fun secondStage(t: Txn, text: String, label: String) {
+        if (!FaseyhaRules.confirmationMatches(text, t.recipient, service.operator, t.amount)) {
+            secondStageStopped(t, "Faseyha's confirmation shows different details."); return
+        }
+        say("Faseyha asked for confirmation. The details match; confirming once…")
+        form.eval(FaseyhaSite.confirmSecond(service.kind.path, t.recipient, plain(t.amount), service.operator, label)) { r ->
+            if (t !== txn || stage != Stage.SUBMITTED) return@eval
+            if (r?.optBoolean("ok") == true) {
+                t.secondStageDone = true
+                form.after(750) { pollResult(t, ++t.chain, 0) }
+            } else secondStageStopped(t, r?.optString("reason")?.ifBlank { null } ?: "Faseyha's confirmation could not be pressed.")
+        }
+    }
+
+    private fun secondStageStopped(t: Txn, reason: String) {
+        finish(t, FaseyhaLedger.REVIEW, "$reason The payment was not confirmed by the app. Open the provider page to check it; do not pay twice.")
+        AlertDialog.Builder(this).setTitle("Confirmation stopped").setMessage(status.text)
+            .setPositiveButton("Show provider page") { _, _ -> screen.showWeb(form, "Faseyha confirmation. Check every detail before confirming here.") }
+            .setNegativeButton("Close", null).show()
+    }
+
+    // ---------- Wallet verification ----------
+
+    private fun startVerification(t: Txn) {
+        if (t !== txn || stage == Stage.VERIFYING || stage == Stage.DONE) return
+        stage = Stage.VERIFYING
+        t.walletAttempts = 0
+        t.walletStarted = System.currentTimeMillis()
+        verifier.open("/wallet")
+    }
+
+    private fun onVerifierLoaded(url: String) {
+        val t = txn
+        val path = FaseyhaSite.pathOf(url)
+        if (stage == Stage.VERIFYING && t != null) {
+            when {
+                path == "/wallet" -> verifier.after(1000) { verifyWallet(t, 0) }
+                FaseyhaSite.isReceiptUrl(url) -> verifier.after(650) { verifyReceipt(t) }
+                else -> retryWallet(t)
+            }
+            return
+        }
+        if (path == "/wallet") verifier.after(800) { readBalance() }
+        else verifier.eval(FaseyhaSite.SIGNED_OUT) { r ->
+            if (r?.optBoolean("signedOut") == true && stage == Stage.IDLE) handleSignedOut()
+            else balanceText.text = "Wallet balance: not available"
+        }
+    }
+
+    private fun refreshBalance() {
+        if (stage == Stage.VERIFYING) return
+        balanceText.text = "Wallet balance: checking…"
+        verifier.open("/wallet")
+    }
+
+    private fun readBalance() {
+        if (stage == Stage.VERIFYING) return
+        verifier.eval(FaseyhaSite.WALLET_SCAN) { r ->
+            if (r?.optBoolean("signedOut") == true) { handleSignedOut(); return@eval }
+            balance = FaseyhaRules.money(r?.optString("balance"))
+            showBalance()
+        }
+    }
+
+    private fun showBalance() {
+        balanceText.text = balance?.let { "Wallet balance: MVR ${FaseyhaRules.format(it)}" } ?: "Wallet balance: not shown"
+    }
+
+    private fun verifyWallet(t: Txn, pass: Int) {
+        if (stage != Stage.VERIFYING || t !== txn) return
+        if (pass == 0) {
+            verifier.eval(FaseyhaSite.walletTab("Recharges")) { verifier.after(950) { verifyWallet(t, 1) } }
+            return
+        }
+        say(if (t.accepted) "Faseyha accepted the payment. Checking Wallet for the final status…" else "Checking Faseyha Wallet for the payment…")
+        verifier.eval(FaseyhaSite.WALLET_SCAN) { r ->
+            if (stage != Stage.VERIFYING || t !== txn) return@eval
+            if (r == null) { retryWallet(t); return@eval }
+            FaseyhaRules.money(r.optString("balance"))?.let { balance = it; showBalance() }
+            val rows = r.optJSONArray("rows") ?: JSONArray()
+            val matches = (0 until rows.length()).mapNotNull { rows.optJSONObject(it) }.filter {
+                FaseyhaRules.walletRowMatches(t.service, it.optString("service"), it.optString("amount"),
+                    it.optString("date"), t.amount, t.startedAt)
+            }
+            when {
+                matches.size > 1 -> finish(t, FaseyhaLedger.REVIEW, "More than one recent Wallet entry matches. Check Faseyha Wallet before paying again.")
+                matches.size == 1 -> {
+                    t.candidate = matches[0]
+                    val receipt = matches[0].optString("url")
+                    if (FaseyhaSite.isReceiptUrl(receipt)) verifier.openUrl(receipt) else finishFromRow(t, matches[0], null)
+                }
+                else -> retryWallet(t)
+            }
+        }
+    }
+
+    private fun verifyReceipt(t: Txn) {
+        val row = t.candidate ?: run { retryWallet(t); return }
+        verifier.eval(FaseyhaSite.RECEIPT_READ) { d ->
+            if (stage != Stage.VERIFYING || t !== txn) return@eval
+            if (d == null) { finishFromRow(t, row, null); return@eval }
+            val reference = row.optString("reference")
+            if (reference.equals(d.optString("reference"), true)) FaseyhaReceipts.put(this, reference, d)
+            if (FaseyhaRules.receiptConfirms(reference, d.optString("reference"), t.recipient, d.optString("account"), t.amount, d.optString("amount")))
+                finishFromRow(t, row, true)
+            else finishFromRow(t, row, false)
+        }
+    }
+
+    private fun finishFromRow(t: Txn, row: JSONObject, receiptConfirmed: Boolean?) {
+        val rowStatus = row.optString("status")
+        val ref = row.optString("reference")
+        val what = "${t.service.label}, ${t.recipient}, MVR ${FaseyhaRules.format(t.amount)}"
+        val balanceNote = balanceChange(t)
+        when {
+            receiptConfirmed == false -> finish(t, FaseyhaLedger.REVIEW,
+                "Wallet shows a matching entry (status $rowStatus, reference $ref), but its receipt does not confirm $what. Check it before paying again.", ref)
+            rowStatus.equals("Failed", true) -> finish(t, FaseyhaLedger.FAILED,
+                "Faseyha Wallet shows this payment as failed: $what. Reference $ref.$balanceNote", ref)
+            FaseyhaRules.successfulStatus(rowStatus) && receiptConfirmed == true -> finish(t, FaseyhaLedger.SUCCESSFUL,
+                "Payment successful: $what. Reference $ref.$balanceNote", ref)
+            FaseyhaRules.successfulStatus(rowStatus) -> finish(t, FaseyhaLedger.REVIEW,
+                "Wallet shows Successful for $what, reference $ref, but the receipt could not be checked.$balanceNote", ref)
+            else -> finish(t, FaseyhaLedger.PROCESSING,
+                "Faseyha Wallet shows $rowStatus for $what. Reference $ref. Check Wallet later; do not pay again.$balanceNote", ref)
+        }
+    }
+
+    private fun balanceChange(t: Txn): String {
+        val after = balance ?: return ""
+        val before = t.balanceBefore
+        return if (before != null && t.amount != null && FaseyhaRules.sameMoney(before - after, t.amount))
+            " Wallet balance went down by MVR ${FaseyhaRules.format(t.amount)} to MVR ${FaseyhaRules.format(after)}."
+        else " Wallet balance: MVR ${FaseyhaRules.format(after)}."
+    }
+
+    private fun retryWallet(t: Txn) {
+        if (stage != Stage.VERIFYING || t !== txn) return
+        t.walletAttempts++
+        t.candidate = null
+        if (t.walletAttempts >= 7 || System.currentTimeMillis() - t.walletStarted > 90_000L) {
+            finish(t, if (t.accepted) FaseyhaLedger.PROCESSING else FaseyhaLedger.REVIEW,
+                if (t.accepted) "Faseyha accepted ${t.service.label} for ${t.recipient}, but Wallet does not show it yet. Check Wallet later; do not pay again."
+                else "The final status is not available yet. Check Faseyha Wallet before paying again.")
+        } else verifier.after(6500) { if (stage == Stage.VERIFYING && t === txn) verifier.open("/wallet") }
+    }
+
+    private fun finish(t: Txn, outcome: String, message: String, reference: String = "") {
+        if (t !== txn) return
+        stage = Stage.DONE
+        t.outcome = outcome
+        t.ledgerId?.let { FaseyhaLedger.update(this, it, outcome, message, reference) }
+        say(message)
+        continueButton.visibility = View.GONE
+        resultActions.visibility = View.VISIBLE
+    }
+
+    // ---------- resets and failures ----------
+
+    private fun stepFailed(reason: String) {
+        val wasActive = stage == Stage.PREPARING || stage == Stage.REVIEW
+        if (wasActive) { stage = Stage.IDLE; generation++ }
+        if (stage == Stage.IDLE) continueButton.isEnabled = true
+        say("$reason Nothing was paid.")
+        if (!wasActive || isFinishing) return
+        AlertDialog.Builder(this).setTitle("Payment not prepared").setMessage(status.text)
+            .setPositiveButton("OK", null)
+            .setNeutralButton("Show provider page") { _, _ -> screen.showWeb(form, "Faseyha ${service.label} page where the app stopped.") }
+            .setNegativeButton("Copy page report") { _, _ -> copyReport() }
+            .show()
+    }
+
+    private fun cancelPreparation(message: String) {
+        when (stage) {
+            Stage.PREPARING, Stage.REVIEW -> {
+                generation++
+                stage = Stage.IDLE
+                txn = null
+                continueButton.isEnabled = true
+                say(message)
+            }
+            Stage.SUBMITTED, Stage.VERIFYING -> say("The payment was already sent and cannot be cancelled here. Its status is still being checked.")
+            else -> Unit
+        }
+    }
+
+    private fun handleSignedOut() {
+        signedOut = true
+        afterLoad = null
+        if (stage == Stage.PREPARING || stage == Stage.REVIEW) { stage = Stage.IDLE; generation++ }
+        if (stage == Stage.IDLE) continueButton.isEnabled = true
+        balanceText.text = "Wallet balance: signed out"
+        say("You are signed out of Faseyha. Choose Open Faseyha website, sign in, then come back.")
+        if (signInPrompted || isFinishing) return
+        signInPrompted = true
+        AlertDialog.Builder(this).setTitle("Sign in to Faseyha")
+            .setMessage("Faseyha needs you to sign in. Sign in on the website screen, then return here.")
+            .setPositiveButton("Open website") { _, _ -> openFaseyhaWebsite() }
+            .setNegativeButton("Later", null).show()
+    }
+
+    private fun whenPreviousSettled(action: () -> Unit) {
+        val t = txn
+        if (stage == Stage.DONE && t != null && t.outcome != FaseyhaLedger.SUCCESSFUL && t.outcome != FaseyhaLedger.FAILED) {
+            AlertDialog.Builder(this).setTitle("Last payment not confirmed")
+                .setMessage("The final status of ${t.service.label} to ${t.recipient} is not confirmed. Check Wallet before paying the same number again. Continue?")
+                .setPositiveButton("Continue") { _, _ -> action() }
+                .setNegativeButton("Cancel", null).show()
+        } else action()
+    }
+
+    private fun newTransaction() {
+        if (stage == Stage.SUBMITTED || stage == Stage.VERIFYING) { say("The last payment is still being checked. Please wait."); return }
+        whenPreviousSettled {
+            resetTransaction()
+            openService()
+        }
+    }
+
+    private fun resetTransaction() {
+        generation++
+        txn = null
+        stage = Stage.IDLE
+        number.text?.clear()
+        amount.text?.clear()
+        resultActions.visibility = View.GONE
+        continueButton.visibility = View.VISIBLE
+        continueButton.isEnabled = true
+        pageReadyFor = null
+    }
+
+    // ---------- other screens and tools ----------
+
+    private fun openWallet(verify: Boolean) {
+        val intent = Intent(this, FaseyhaWalletActivity::class.java)
+        val t = txn
+        if (verify && t != null && t.startedAt > 0) {
+            intent.putExtra(FaseyhaWalletActivity.VERIFY_SERVICE, FaseyhaRules.SERVICES.indexOf(t.service))
+                .putExtra(FaseyhaWalletActivity.VERIFY_RECIPIENT, t.recipient)
+                .putExtra(FaseyhaWalletActivity.VERIFY_AMOUNT, FaseyhaRules.format(t.amount))
+                .putExtra(FaseyhaWalletActivity.VERIFY_STARTED_AT, t.startedAt)
+        }
+        startActivity(intent)
+    }
+
+    private fun copyReport() {
+        form.eval(FaseyhaSite.PAGE_REPORT) { r ->
+            if (r == null) { notice("The Faseyha page could not be read."); return@eval }
+            val text = buildString {
+                append("Haluvi Service Connector page report\n")
+                append("App version: ").append(appVersion()).append('\n')
+                append("Service: ${service.label}; step: ${stage.name.lowercase()}\n")
+                append("Status: ").append(status.text).append('\n')
+                append("Path: ").append(r.optString("path")).append("; signed out: ").append(r.optBoolean("signedOut")).append('\n')
+                append("Operator: ").append(r.optString("operator")).append('\n')
+                for (key in listOf("headings", "buttons", "choices", "inputs", "dialogs")) {
+                    val list = r.optJSONArray(key) ?: continue
+                    append('\n').append(key.replaceFirstChar { it.uppercase() }).append(":\n")
+                    for (i in 0 until list.length()) append("- ").append(list.optString(i)).append('\n')
+                }
+                if (r.optString("summary").isNotBlank()) append("\nOrder summary: ").append(r.optString("summary")).append('\n')
+                append("\nField values are not included.")
+            }
+            (getSystemService(CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("Faseyha page report", text))
+            Toast.makeText(this, "Page report copied", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun showLog() {
+        val rows = FaseyhaLedger.list(this)
+        if (rows.length() == 0) { notice("No payments have been sent from this app yet."); return }
+        val format = DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT)
+        val labels = Array(rows.length()) { i ->
+            val r = rows.getJSONObject(i)
+            "${r.optString("service")}, ${r.optString("target")}, MVR ${r.optString("amount")}, ${r.optString("status")}, " +
+                format.format(Date(r.optLong("created")))
+        }
+        AlertDialog.Builder(this).setTitle("Recent payments from this app")
+            .setItems(labels) { _, i ->
+                val r = rows.getJSONObject(i)
+                AlertDialog.Builder(this).setTitle(r.optString("service"))
+                    .setMessage(labels[i] + (r.optString("reference").let { if (it.isBlank()) "" else "\nReference: $it" }) +
+                        (r.optString("note").let { if (it.isBlank()) "" else "\n\n$it" }) +
+                        "\n\nFaseyha Wallet is the final record.")
+                    .setPositiveButton("Close", null)
+                    .setNegativeButton("Delete from log") { _, _ -> FaseyhaLedger.delete(this, r.optString("id")) }
+                    .show()
+            }
+            .setNeutralButton("Clear log") { _, _ ->
+                AlertDialog.Builder(this).setTitle("Clear the app payment log?")
+                    .setMessage("This deletes only this app's log, not Faseyha history.")
+                    .setPositiveButton("Clear") { _, _ -> FaseyhaLedger.clear(this) }
+                    .setNegativeButton("Cancel", null).show()
+            }
+            .setNegativeButton("Close", null).show()
+    }
+
+    private fun say(text: String) { status.text = text }
+
+    private fun plain(value: BigDecimal?) = value?.stripTrailingZeros()?.toPlainString() ?: ""
+
+    @Deprecated("Deprecated in Java")
+    override fun onBackPressed() {
+        when {
+            screen.isWebShown -> screen.showNative()
+            stage == Stage.SUBMITTED || stage == Stage.VERIFYING -> AlertDialog.Builder(this)
+                .setTitle("Payment still being checked")
+                .setMessage("Leaving stops the automatic check. The payment itself is not cancelled. Check Wallet before paying again.")
+                .setPositiveButton("Leave") { _, _ -> finish() }
+                .setNegativeButton("Stay", null).show()
+            else -> super.onBackPressed()
+        }
+    }
+
     override fun onDestroy() {
-        walletCheckActive=false
-        if (::walletVerifier.isInitialized) {
-            (walletVerifier.parent as? ViewGroup)?.removeView(walletVerifier)
-            walletVerifier.destroy()
-        }
-        if (::receiptVerifier.isInitialized) {
-            (receiptVerifier.parent as? ViewGroup)?.removeView(receiptVerifier)
-            receiptVerifier.destroy()
-        }
-        if (::web.isInitialized) {
-            (web.parent as? ViewGroup)?.removeView(web)
-            web.destroy()
-        }
+        if (::form.isInitialized) form.destroy()
+        if (::verifier.isInitialized) verifier.destroy()
         super.onDestroy()
     }
 }
+
+fun Activity.appVersion(): String = try {
+    packageManager.getPackageInfo(packageName, 0).versionName ?: "unknown"
+} catch (_: Exception) { "unknown" }
