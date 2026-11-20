@@ -219,6 +219,8 @@ return JSON.stringify({summary:sum,found:cands.length,enabled:on.length,
   numberMatch:ins.some(x=>H.alnum(x.value)===H.alnum(number)),
   amountMatch:ins.some(x=>x.value!==''&&Number(String(x.value).replace(/,/g,''))===Number(amount)),
   invalid:ins.filter(x=>x.required&&!x.checkValidity()).map(x=>H.tidy(x.getAttribute('aria-label')||x.placeholder||x.name||x.id).slice(0,60)),
+  amountSeen:ins.filter(x=>/(amount|price|pay|mvr)/.test(H.fieldLabel(x))||x.type==='number').map(x=>H.tidy(x.value)).filter(Boolean).slice(0,3),
+  numberEmpty:!ins.some(x=>H.tidy(x.value)!==''),
   operatorMatch:H.operatorMatches(op,action==='Pay'?'':sum),operator:H.operatorState()});""",
         "number" to number, "amount" to amount, "op" to operator, "action" to action)
 

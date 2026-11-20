@@ -1,5 +1,11 @@
 # Haluvi Service Connector
 
+## v2.25 operator detected from the number
+
+Faseyha picks the operator from the mobile number or account entered (for example, 79x numbers as Ooredoo), even after another operator tab is selected. The app now recognizes this and offers the matching service with one tap, keeping the number and amount. Previously it stopped with "Faseyha does not show … as the selected operator."
+
+If Faseyha rebuilds its form after an operator change or account lookup, the app enters the details again instead of stopping with "did not keep the number or amount". Remaining failures now say exactly what Faseyha shows (form cleared, a different amount, or a disabled button, which may mean the amount is below Faseyha's minimum).
+
 ## v2.24 native screens, Ooredoo Bill Pay fixes and simpler flow
 
 **Screens.** Home opens **Faseyha payments**, **Faseyha Wallet** and **Faseyha website and sign in** directly. Payments and Wallet are fully native; the Faseyha page they drive runs hidden behind the native screen and is excluded from TalkBack. Sign-in and manual checking use the separate website screen, which shares the same saved session. A signed-out session is detected and the app offers the website screen; on return it reloads automatically. **More options, Show provider page** reveals the hidden page when needed.

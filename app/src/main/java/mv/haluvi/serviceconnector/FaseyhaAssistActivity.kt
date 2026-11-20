@@ -458,30 +458,82 @@ class FaseyhaAssistActivity : Activity() {
         form.eval(FaseyhaSite.ready(t.recipient, plain(t.amount), service.operator, service.kind.action)) { d ->
             if (token != generation) return@eval
             val summary = d?.optString("summary").orEmpty()
+            val valuesKept = d != null && d.optBoolean("numberMatch") && d.optBoolean("amountMatch")
             val ready = d != null && (service.kind == Kind.BILL || summary.isNotBlank()) && d.optInt("enabled") == 1 &&
-                d.optBoolean("numberMatch") && d.optBoolean("amountMatch") && d.optBoolean("operatorMatch")
+                valuesKept && d.optBoolean("operatorMatch")
+            // Faseyha chooses the operator from the number it is given. When it settles
+            // on a different operator, offer the matching service instead of failing.
+            val detected = d?.optJSONObject("operator")?.optString("active").orEmpty()
             when {
                 ready -> { t.summary = summary; showReview(token) }
+                detected.isNotBlank() && !detected.equals(service.operator, true) && valuesKept && attempt >= 2 ->
+                    operatorDetected(t, detected)
                 attempt < 19 -> {
                     if (attempt == 4) say("Waiting for Faseyha to check the account and enable payment…")
-                    form.after(650) { waitReady(token, attempt + 1) }
+                    // Faseyha can rebuild its form after an operator change or an account
+                    // lookup, losing typed values. Enter them again rather than failing.
+                    val refill = (!valuesKept && attempt in setOf(2, 6, 10, 14)) ||
+                        (d != null && d.optInt("enabled") == 0 && attempt in setOf(8, 15))
+                    if (refill) form.eval(FaseyhaSite.fill(t.recipient, plain(t.amount), service.kind, true)) {
+                        form.after(650) { waitReady(token, attempt + 1) }
+                    } else form.after(650) { waitReady(token, attempt + 1) }
                 }
-                else -> stepFailed(notReadyReason(d))
+                else -> stepFailed(notReadyReason(d, t))
             }
         }
     }
 
-    private fun notReadyReason(d: JSONObject?): String {
+    private fun operatorDetected(t: Txn, detected: String) {
+        val match = FaseyhaRules.SERVICES.firstOrNull { it.kind == t.service.kind && it.operator.equals(detected, true) }
+        val name = match?.operator ?: detected.replaceFirstChar { it.uppercase() }
+        val what = if (t.service.kind == Kind.BILL) "account ${t.recipient}" else "${t.recipient} as a $name number"
+        generation++
+        stage = Stage.IDLE
+        txn = null
+        continueButton.isEnabled = true
+        if (match == null) {
+            say("Faseyha selects $name for $what, which this app does not support for ${t.service.label}. Nothing was paid.")
+            notice(status.text.toString(), "Different operator")
+            return
+        }
+        val message = if (t.service.kind == Kind.BILL) "Faseyha selects $name for $what, not ${t.service.operator}."
+            else "Faseyha identifies $what, not ${t.service.operator}."
+        say("$message Nothing was paid.")
+        AlertDialog.Builder(this).setTitle("Different operator")
+            .setMessage("$message\n\nUse ${match.label} instead?" +
+                if (match.kind == Kind.PACKAGE) "\nYou will need to choose the package again." else "")
+            .setPositiveButton("Use ${match.label}") { _, _ ->
+                val keepNumber = t.recipient
+                val keepAmount = amount.text.toString()
+                service = match
+                prefs.edit().putInt("service", FaseyhaRules.SERVICES.indexOf(match)).apply()
+                category = null
+                chosenPackage = null
+                resetTransaction()
+                updateSelections()
+                number.setText(keepNumber)
+                amount.setText(keepAmount)
+                if (match.kind == Kind.PACKAGE) openService() else startPreparation()
+            }
+            .setNegativeButton("Cancel", null).show()
+    }
+
+    private fun notReadyReason(d: JSONObject?, t: Txn): String {
         if (d == null) return "Faseyha's page could not be read."
         val invalid = d.optJSONArray("invalid")
         val missing = if (invalid != null) (0 until invalid.length()).joinToString(", ") { invalid.optString(it) } else ""
+        val seen = d.optJSONArray("amountSeen")?.let { a -> (0 until a.length()).map { a.optString(it) } }.orEmpty()
         return when {
-            !d.optBoolean("numberMatch") || !d.optBoolean("amountMatch") -> "Faseyha did not keep the number or amount."
+            !d.optBoolean("numberMatch") && d.optBoolean("numberEmpty") -> "Faseyha cleared the form after the details were entered."
+            !d.optBoolean("numberMatch") -> "Faseyha did not keep ${t.recipient} in its form."
+            !d.optBoolean("amountMatch") && seen.isNotEmpty() ->
+                "Faseyha shows the amount as ${seen.joinToString(" or ")} instead of ${plain(t.amount)}."
+            !d.optBoolean("amountMatch") -> "Faseyha did not keep the amount ${plain(t.amount)}."
             d.optString("summary").isBlank() && service.kind != Kind.BILL -> "Faseyha did not show an order summary for this number."
             !d.optBoolean("operatorMatch") -> "Faseyha does not show ${service.operator} as the selected operator."
             missing.isNotBlank() -> "Faseyha needs more information: $missing."
             d.optInt("found") == 0 -> "Faseyha's ${service.kind.action} button was not found."
-            d.optInt("enabled") == 0 -> "Faseyha's ${service.kind.action} button stays disabled. Faseyha may not accept this account or amount."
+            d.optInt("enabled") == 0 -> "Faseyha's ${service.kind.action} button stays disabled. Faseyha may not accept this number or amount; check the minimum amount."
             else -> "Faseyha shows more than one ${service.kind.action} button, so the app stopped."
         }
     }
