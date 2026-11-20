@@ -45,6 +45,7 @@ class FaseyhaAssistActivity : Activity() {
         var walletStarted = 0L
         var candidate: JSONObject? = null
         var outcome = ""
+        var reselected = false
     }
 
     private lateinit var screen: EngineScreen
@@ -298,12 +299,27 @@ class FaseyhaAssistActivity : Activity() {
         }
     }
 
-    private fun applyOperator(token: Int, attempt: Int, then: () -> Unit) {
+    /**
+     * Selects the operator tab and confirms Faseyha really selected it. A tap made before
+     * the page is ready can be ignored, leaving Faseyha's default operator selected.
+     */
+    private fun applyOperator(token: Int, attempt: Int, then: () -> Unit, clicks: Int = 0) {
         form.eval(FaseyhaSite.applyOperator(service.operator)) { r ->
             if (token != generation) return@eval
-            if (r?.optBoolean("ok") == true) {
+            val clicked = r?.optBoolean("clicked") == true
+            val active = r?.optString("active").orEmpty()
+            if (r?.optBoolean("ok") == true && (!clicked || clicks >= 4)) {
+                if (clicked && active.isNotBlank() && !active.equals(service.operator, true)) {
+                    stepFailed("Faseyha did not switch to ${service.operator}; it stays on ${active.replaceFirstChar { it.uppercase() }}.")
+                    return@eval
+                }
+                // Not clicked: the operator is confirmed selected. Four clicks without a
+                // selected marker: the page shows none, so the later checks decide.
                 pageReadyFor = service
-                form.after(if (r.optBoolean("clicked")) 900 else 150) { if (token == generation) then() }
+                form.after(150) { if (token == generation) then() }
+            } else if (r?.optBoolean("ok") == true) {
+                // Clicked: check again shortly that the selection actually took effect.
+                form.after(900) { applyOperator(token, attempt + 1, then, clicks + 1) }
             } else if (attempt < 16) {
                 form.after(500) { applyOperator(token, attempt + 1, then) }
             } else stepFailed(r?.optString("reason")?.ifBlank { null } ?: "Faseyha did not show the ${service.operator} option.")
@@ -464,10 +480,23 @@ class FaseyhaAssistActivity : Activity() {
             // Faseyha chooses the operator from the number it is given. When it settles
             // on a different operator, offer the matching service instead of failing.
             val detected = d?.optJSONObject("operator")?.optString("active").orEmpty()
+            val wrongOperator = detected.isNotBlank() && !detected.equals(service.operator, true) && valuesKept
             when {
                 ready -> { t.summary = summary; showReview(token) }
-                detected.isNotBlank() && !detected.equals(service.operator, true) && valuesKept && attempt >= 2 ->
-                    operatorDetected(t, detected)
+                wrongOperator && !t.reselected && attempt >= 1 -> {
+                    // Select the requested operator again, re-enter the details and recheck.
+                    t.reselected = true
+                    say("Faseyha changed the operator to ${detected.replaceFirstChar { it.uppercase() }}. Selecting ${service.operator} again…")
+                    form.eval(FaseyhaSite.applyOperator(service.operator)) {
+                        form.after(900) {
+                            if (token != generation) return@after
+                            form.eval(FaseyhaSite.fill(t.recipient, plain(t.amount), service.kind, true)) {
+                                form.after(900) { waitReady(token, attempt + 1) }
+                            }
+                        }
+                    }
+                }
+                wrongOperator && attempt >= 4 -> operatorDetected(t, detected)
                 attempt < 19 -> {
                     if (attempt == 4) say("Waiting for Faseyha to check the account and enable payment…")
                     // Faseyha can rebuild its form after an operator change or an account
@@ -486,22 +515,22 @@ class FaseyhaAssistActivity : Activity() {
     private fun operatorDetected(t: Txn, detected: String) {
         val match = FaseyhaRules.SERVICES.firstOrNull { it.kind == t.service.kind && it.operator.equals(detected, true) }
         val name = match?.operator ?: detected.replaceFirstChar { it.uppercase() }
-        val what = if (t.service.kind == Kind.BILL) "account ${t.recipient}" else "${t.recipient} as a $name number"
         generation++
         stage = Stage.IDLE
         txn = null
         continueButton.isEnabled = true
         if (match == null) {
-            say("Faseyha selects $name for $what, which this app does not support for ${t.service.label}. Nothing was paid.")
+            say("Faseyha selects $name for ${t.recipient}, which this app does not support for ${t.service.label}. Nothing was paid.")
             notice(status.text.toString(), "Different operator")
             return
         }
-        val message = if (t.service.kind == Kind.BILL) "Faseyha selects $name for $what, not ${t.service.operator}."
-            else "Faseyha identifies $what, not ${t.service.operator}."
+        val message = "Faseyha keeps selecting $name for ${t.recipient}, even after the app selected ${t.service.operator} again. " +
+            "Check that ${t.recipient} is a ${t.service.operator} " + (if (t.service.kind == Kind.BILL) "account." else "number.")
         say("$message Nothing was paid.")
         AlertDialog.Builder(this).setTitle("Different operator")
-            .setMessage("$message\n\nUse ${match.label} instead?" +
+            .setMessage("$message\n\nOnly if it really is a $name ${if (t.service.kind == Kind.BILL) "account" else "number"}, use ${match.label} instead." +
                 if (match.kind == Kind.PACKAGE) "\nYou will need to choose the package again." else "")
+            .setNeutralButton("Show provider page") { _, _ -> screen.showWeb(form, "Faseyha ${t.service.label} page") }
             .setPositiveButton("Use ${match.label}") { _, _ ->
                 val keepNumber = t.recipient
                 val keepAmount = amount.text.toString()

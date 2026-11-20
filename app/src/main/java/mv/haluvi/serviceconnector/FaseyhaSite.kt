@@ -117,14 +117,14 @@ return {tidy,low,trusted,visible,enabled,label,labels,fieldLabel,all,buttons,inp
     fun applyOperator(operator: String) = script("""
 if(!H.trusted())return JSON.stringify({ok:false,reason:'This page is not on Faseyha.'});
 const w=H.low(op);
-if(H.operatorState().active===w)return JSON.stringify({ok:true,clicked:false});
+if(H.operatorState().active===w)return JSON.stringify({ok:true,clicked:false,active:w});
 const safe=x=>!/(pay|recharge now|activate|submit|purchase|checkout|confirm)/.test(H.low(H.opLabel(x)));
 let pick=H.opControls().filter(x=>!x.disabled&&safe(x)&&H.opOf(H.opLabel(x))===w);
 if(pick.length>1){const exact=pick.filter(x=>H.low(H.opLabel(x))===w);if(exact.length===1)pick=exact;}
 if(pick.length!==1)return JSON.stringify({ok:false,reason:pick.length===0?'No '+op+' option is visible on Faseyha yet.':
   'Faseyha shows '+pick.length+' '+op+' options, so the app cannot choose one safely.'});
 pick[0].click();
-return JSON.stringify({ok:true,clicked:true});""", "op" to operator)
+return JSON.stringify({ok:true,clicked:true,active:H.operatorState().active});""", "op" to operator)
 
     val CATEGORIES = script("""
 const names=H.all('button,[role="tab"],[role="button"]').filter(x=>!x.disabled)

@@ -1,8 +1,8 @@
 # Haluvi Service Connector
 
-## v2.25 operator detected from the number
+## v2.25 confirmed operator selection
 
-Faseyha picks the operator from the mobile number or account entered (for example, 79x numbers as Ooredoo), even after another operator tab is selected. The app now recognizes this and offers the matching service with one tap, keeping the number and amount. Previously it stopped with "Faseyha does not show … as the selected operator."
+The app now confirms that Faseyha really selected the operator tab it tapped. A tap made before the page was ready could be ignored, leaving Faseyha's default (Ooredoo) selected for a Dhiraagu Reload. If Faseyha changes the operator after the number is entered, the app selects the requested operator again and re-enters the details. Only if Faseyha still insists does the app stop, explain, and optionally offer the other operator's service after you check the number.
 
 If Faseyha rebuilds its form after an operator change or account lookup, the app enters the details again instead of stopping with "did not keep the number or amount". Remaining failures now say exactly what Faseyha shows (form cleared, a different amount, or a disabled button, which may mean the amount is below Faseyha's minimum).
 
