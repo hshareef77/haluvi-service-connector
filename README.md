@@ -17,6 +17,8 @@
 
 **Simplified code.** One shared script library replaces three receipt parsers, two Wallet scanners and duplicated operator checks. Unused functions, manual "user-reported" statuses, the old field inspectors and the second embedded browser are removed. Matching rules live in `FaseyhaRules.kt` with JVM unit tests. The app payment log (More options, Recent payments from this app) is recorded automatically.
 
+**Removed:** controlling other installed apps and the optional Android accessibility service. They only counted controls, needed a sensitive permission and are not needed for Faseyha. Saved websites remain under Other saved websites. Recharge Manager will later use this app as its Faseyha channel.
+
 **Still needs phone testing.** These changes were tested against simulated Faseyha pages, not the live site. **Copy page report for support** copies page structure without field values, to help diagnose any page that still stops.
 
 ## v2.3 combined fixes: package flow and Wallet receipt details
