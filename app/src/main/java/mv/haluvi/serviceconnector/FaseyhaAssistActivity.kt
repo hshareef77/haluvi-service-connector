@@ -822,6 +822,224 @@ class FaseyhaAssistActivity : Activity() {
         }
     }
 
+    // Internal read-only reconciliation. No navigation and no payment retries.
+    private fun startInternalWalletCheck() {
+        if (walletCheckComplete || isFinishing || submissionStartedAt==0L) return
+        if (!::walletVerifier.isInitialized) return
+        if (walletCheckActive) return
+        walletCheckActive=true
+        walletCheckStartedAt=System.currentTimeMillis()
+        state.text="Your request was submitted. Verifying transaction in Faseyha Wallet. Please wait."
+        walletVerifier.loadUrl("https://faseyha.net/wallet")
+    }
+
+    private fun scanVerificationWallet(pass:Int) {
+        if (!walletCheckActive || walletCheckComplete || isFinishing || !::walletVerifier.isInitialized) return
+        val uri=Uri.parse(walletVerifier.url ?: "")
+        if(uri.scheme!="https" || !trusted(uri.host) || uri.path!="/wallet"){
+            scheduleWalletRetry()
+            return
+        }
+        // Select the read-only Recharges category where necessary. Never click a
+        // recharge/pay action in this browser.
+        val js=StringBuilder().append("""(function(){
+            const tidy=x=>(x||'').replace(/\s+/g,' ').trim();
+            if(__CHOOSE__){
+              const tabs=Array.from(document.querySelectorAll('button,[role="tab"],[role="button"]'))
+                .filter(x=>x.getClientRects().length>0 && tidy(x.innerText||x.getAttribute('aria-label')).toLowerCase()==='recharges');
+              if(tabs.length===1)tabs[0].click();
+              return JSON.stringify({rows:[]});
+            }
+            const links=Array.from(document.querySelectorAll('a[href]'))
+                .filter(x=>/receipt|tax invoice/i.test(tidy(x.innerText||x.getAttribute('aria-label')))||
+                   /\/invoice\//i.test(x.href));
+            const statusPattern=/\b(successful|completed|processing|pending|failed|submitted)\b/i;
+            const referencePattern=/\b(?:FR|BLA)[A-Z0-9]{8,40}\b/i;
+            const datePattern=/\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2}(?:,\s*|\s+)\d{1,2}:\d{2}\s*(?:AM|PM)\b/i;
+            const rows=[],seen=new Set();
+            for(const a of links){
+              let item=null,p=a;
+              for(let n=0;n<10&&p;n++,p=p.parentElement){
+                const t=tidy(p.innerText||'');
+                if(t.length>=20&&t.length<=900&&referencePattern.test(t)&&
+                    statusPattern.test(t)&&datePattern.test(t)){item=p;break;}
+              }
+              if(!item)continue;
+              const t=tidy(item.innerText||'');
+              const ref=(t.match(referencePattern)||[])[0]||'';
+              if(!ref||seen.has(ref))continue;
+              seen.add(ref);
+              const status=(t.match(statusPattern)||[])[1]||'Unknown';
+              const date=(t.match(datePattern)||[])[0]||'';
+              const service=tidy(t.slice(0,t.indexOf(ref))).slice(0,100);
+              const leaves=Array.from(item.querySelectorAll('*'))
+                .filter(x=>x.getClientRects().length&&x.children.length===0)
+                .map(x=>tidy(x.textContent)).filter(x=>x.length&&x.length<45);
+              const values=leaves.filter(x=>/^[+−-]?\s*(?:MVR|Rf|ރ|ރ\.)?\s*[\d,]+(?:\.\d{1,2})?$/.test(x))
+                .filter(x=>/[+−-]|(?:MVR|Rf|ރ)/i.test(x)||/\d{1,3},\d{3}/.test(x))
+                .map(x=>x.replace(/[^\d.,]/g,''));
+              let amount=values.length===1?values[0]:'';
+              if(!amount){
+                const v=t.match(/(?:MVR|Rf|ރ|ރ\.)\s*([+-]?\s*[\d,]+(?:\.\d{1,2})?)/i);
+                if(v)amount=v[1].trim().replace(/^[+−-]\s*/,'');
+              }
+              if(!amount){
+                const ix=t.search(statusPattern),pre=ix>=0?t.slice(Math.max(0,ix-36),ix):'';
+                const v=pre.match(/(?:^|\s)([+-]?\s*\d[\d,]*(?:\.\d{1,2})?)\s*$/);
+                if(v)amount=v[1].trim().replace(/^[+−-]\s*/,'');
+              }
+              let url='';
+              try{
+                const u=new URL(a.href);
+                if(u.protocol==='https:'&&u.hostname==='faseyha.net'&&u.pathname.startsWith('/invoice/'))
+                  url=u.href;
+              }catch(e){}
+              rows.push({reference:ref,service:service,status:status,date:date,amount:amount,url:url});
+            }
+            return JSON.stringify({rows:rows.slice(0,75)});
+        })();""").toString().replace("__CHOOSE__",if(pass==0)"true" else "false")
+        walletVerifier.evaluateJavascript(js){raw->
+            if(!walletCheckActive || walletCheckComplete || isFinishing)return@evaluateJavascript
+            try {
+                val outer=JSONObject(org.json.JSONArray("[$raw]").getString(0))
+                if(pass==0){
+                    walletVerifier.postDelayed({scanVerificationWallet(1)},950)
+                    return@evaluateJavascript
+                }
+                val rows=outer.optJSONArray("rows") ?: org.json.JSONArray()
+                val matches=mutableListOf<JSONObject>()
+                for(i in 0 until rows.length()){
+                    val row=rows.optJSONObject(i) ?: continue
+                    if(isMatchingWalletCandidate(row))matches.add(row)
+                }
+                if(matches.size>1){
+                    state.text="Several recent transactions match. Automatic verification is uncertain. Check receipts before retrying."
+                    walletCheckActive=false
+                    walletCheckComplete=true
+                }else if(matches.size==1){
+                    receiptCandidate=matches.first()
+                    val url=matches.first().optString("url")
+                    if(url.startsWith("https://faseyha.net/invoice/") && ::receiptVerifier.isInitialized){
+                        receiptCheckReference=matches.first().optString("reference")
+                        receiptVerifier.loadUrl(url)
+                    }else {
+                        // A unique wallet row without a matching recipient receipt
+                        // is suggestive, but not proof of this specific recipient.
+                        state.text="Faseyha Wallet shows a recent "+matches.first().optString("status")+
+                            " charge matching the service and amount. Recipient not verified; review receipt."
+                        walletCheckActive=false
+                        walletCheckComplete=true
+                    }
+                } else scheduleWalletRetry()
+            }catch (_:Exception){scheduleWalletRetry()}
+        }
+    }
+
+    private fun isMatchingWalletCandidate(row:JSONObject):Boolean {
+        val recipient=pendingPaymentRecipient ?: return false
+        if(recipient.isBlank() || submissionStartedAt<=0L)return false
+        val operator=if(serviceIndex==2)billOperators[billOperatorIndex] else operators[operatorIndex]
+        val name=row.optString("service")
+        if(!name.contains(operator,true))return false
+        val kind=when(serviceIndex){
+            0->name.contains("reload",true)||name.contains("raastas",true)||
+                (name.contains("recharge",true)&&!name.contains("package",true))
+            1->name.contains("package",true)||name.contains("data",true)
+            else->name.contains("bill",true)
+        }
+        if(!kind)return false
+        val amountExpected=(pendingPaymentAmount ?: selectedPackagePrice)?.replace(",","")
+            ?.toBigDecimalOrNull()
+        val amountSeen=row.optString("amount").replace(",","").toBigDecimalOrNull()
+        if(amountExpected==null || amountSeen==null ||
+            amountExpected.compareTo(amountSeen)!=0)return false
+        val date=row.optString("date")
+        val epoch=try {
+            val format=java.text.SimpleDateFormat("MMM d, h:mm a",java.util.Locale.ENGLISH)
+            format.isLenient=false
+            val parsed=format.parse(date.replace(Regex("\\s+")," ").trim()) ?: return false
+            val cal=java.util.Calendar.getInstance().apply {
+                time=parsed
+                set(java.util.Calendar.YEAR,java.util.Calendar.getInstance().get(java.util.Calendar.YEAR))
+            }
+            if(cal.timeInMillis>System.currentTimeMillis()+86400000L)
+                cal.add(java.util.Calendar.YEAR,-1)
+            cal.timeInMillis
+        }catch (_:Exception){return false}
+        return (epoch-submissionStartedAt) in -120000L..1800000L
+    }
+
+    private fun inspectVerificationReceipt(){
+        if(!walletCheckActive || walletCheckComplete || receiptCheckReference.isNullOrBlank() ||
+            !::receiptVerifier.isInitialized || isFinishing)return
+        val uri=Uri.parse(receiptVerifier.url ?: "")
+        if(uri.scheme!="https" || !trusted(uri.host) || uri.path?.startsWith("/invoice/")!=true){
+            scheduleWalletRetry();return
+        }
+        val js="""(function(){
+            const text=document.body.innerText||'';
+            const ref=(text.match(/receipt\s*(?:no\.?|number)\s*:?\s*([A-Z0-9]{8,45})/i)||[])[1]||'';
+            const total=(text.match(/(?:total amount|amount paid)\s*(?:MVR|Rf|ރ|ރ\.)?\s*([\d,]+(?:\.\d{1,2})?)/i)||[])[1]||'';
+            const service=(text.match(/description\s+([\s\S]{0,120}?)(?:total amount|amount paid)/i)||[])[1]||'';
+            const billTo=(text.match(/bill to\s+([A-Z0-9-]{5,32})/i)||[])[1]||'';
+            const candidates=(service.match(/\b[A-Z0-9-]{7,30}\b/gi)||[]).filter(x=>/\d/.test(x));
+            const recipient=candidates.find(x=>/^BB/i.test(x))||candidates[candidates.length-1]||billTo;
+            return JSON.stringify({reference:ref,total:total,recipient:recipient,paid:/\bpaid in full\b/i.test(text)});
+        })();"""
+        receiptVerifier.evaluateJavascript(js){raw->
+            if(!walletCheckActive || walletCheckComplete || isFinishing)return@evaluateJavascript
+            try {
+                val detail=JSONObject(org.json.JSONArray("[$raw]").getString(0))
+                val candidate=receiptCandidate ?: return@evaluateJavascript
+                val reference=receiptCheckReference.orEmpty()
+                val actual=detail.optString("reference")
+                val input=pendingPaymentRecipient.orEmpty().filter(Char::isLetterOrDigit)
+                    .removePrefix("960").uppercase(java.util.Locale.ROOT)
+                val account=detail.optString("recipient").filter(Char::isLetterOrDigit)
+                    .removePrefix("960").uppercase(java.util.Locale.ROOT)
+                val expected=(pendingPaymentAmount ?: selectedPackagePrice)
+                    ?.replace(",","")?.toBigDecimalOrNull()
+                val paid=detail.optString("total").replace(",","").toBigDecimalOrNull()
+                if(reference.equals(actual,true) && input.isNotBlank() && input==account &&
+                    expected!=null && paid!=null && expected.compareTo(paid)==0){
+                    walletCheckActive=false
+                    walletCheckComplete=true
+                    observingProviderResult=false
+                    val status=candidate.optString("status")
+                    state.text="Faseyha Wallet verification: $status. "+
+                        "Service: "+serviceChoices[selectedServiceChoice]+
+                        ". Recipient: "+pendingPaymentRecipient.orEmpty()+
+                        ". MVR "+expected+". Reference: "+reference+
+                        ". This confirms the provider record, not network delivery."
+                }else {
+                    walletCheckActive=false
+                    walletCheckComplete=true
+                    state.text="Wallet has a recent matching charge, but the recipient or receipt could not be verified. "+
+                        "Status uncertain for this recipient; do not retry before reviewing history."
+                }
+            }catch (_:Exception){scheduleWalletRetry()}
+        }
+    }
+
+    private fun scheduleWalletRetry(){
+        if(!walletCheckActive || walletCheckComplete || isFinishing)return
+        receiptCheckReference=null
+        receiptCandidate=null
+        walletCheckAttempts++
+        if(walletCheckAttempts>=7 || System.currentTimeMillis()-walletCheckStartedAt>90000L){
+            walletCheckActive=false
+            walletCheckComplete=true
+            state.text="No matching recent Faseyha Wallet receipt could be verified. Status unknown. "+
+                "Review Wallet before making another payment."
+        }else {
+            state.text="Checking transaction history. No verified result yet; do not retry."
+            walletVerifier.postDelayed({
+                if(walletCheckActive && !isFinishing)
+                    walletVerifier.loadUrl("https://faseyha.net/wallet")
+            },6500)
+        }
+    }
+
     private fun openWalletVerification() {
         val verify = android.content.Intent(this, FaseyhaWalletActivity::class.java)
         verify.putExtra("verify_service", services[serviceIndex])
