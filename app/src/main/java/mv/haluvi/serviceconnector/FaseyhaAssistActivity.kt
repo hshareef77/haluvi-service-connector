@@ -199,7 +199,8 @@ class FaseyhaAssistActivity : Activity() {
         }
         CookieManager.getInstance().setAcceptCookie(true)
         layout.addView(primary)
-        layout.addView(TextView(this).apply { text = "Provider website. If preparing opens a different service page, allow it to load and activate Prepare form again. The website may require further service selections. Additional browser and inspection controls are below." })
+        // Browser troubleshooting details belong in the optional advanced controls,
+        // not the normal TalkBack payment flow.
         layout.addView(web, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 460.dp))
         layout.addView(actions)
         // Read-only background browser shares the authenticated Faseyha cookie jar.
