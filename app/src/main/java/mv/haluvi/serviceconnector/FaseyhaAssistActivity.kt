@@ -627,7 +627,8 @@ class FaseyhaAssistActivity : Activity() {
             const providerCard=body.toLowerCase().includes('pay any '+operatorName.toLowerCase()) ||
                 (operatorName==='Ooredoo' && body.toLowerCase().includes('pay any ooredoo postpaid'));
             const providerHeading=heading.some(x=>x===operatorName.toLowerCase() ||
-                x.startsWith(operatorName.toLowerCase()+' /'));
+                x.startsWith(operatorName.toLowerCase()+' /')) ||
+                (operatorName==='Ooredoo' && body.toLowerCase().includes('ooredoo / supernet'));
             const billOperatorMatch=explicitTab || (providerHeading && providerCard);
             const operatorMatch=action==='Pay' ? billOperatorMatch :
                 (summary.toLowerCase().includes(operatorName.toLowerCase()) || explicitTab);
@@ -751,7 +752,8 @@ class FaseyhaAssistActivity : Activity() {
             const headings=Array.from(document.querySelectorAll('h1,h2,h3,h4,[role="heading"]'))
                 .filter(visible).map(x=>clean(x.innerText||x.textContent).toLowerCase());
             const providerHeading=headings.some(x=>x===operatorName.toLowerCase()||
-                x.startsWith(operatorName.toLowerCase()+' /'));
+                x.startsWith(operatorName.toLowerCase()+' /'))||
+                (operatorName==='Ooredoo' && text.toLowerCase().includes('ooredoo / supernet'));
             const providerCard=text.toLowerCase().includes('pay any '+operatorName.toLowerCase())||
                 (operatorName==='Ooredoo' && text.toLowerCase().includes('pay any ooredoo postpaid'));
             const billOperatorMatched=selectedTab || (providerHeading && providerCard);
@@ -884,6 +886,10 @@ class FaseyhaAssistActivity : Activity() {
                 if(/\b(failed|declined|unsuccessful|rejected|payment error|transaction error)\b/i.test(line)){
                     classification='Failed';message=line;break;
                 }
+                if(/\bbill\s*payment\s*successful\b/i.test(line) &&
+                   /\b(being processed|submitted|notify you once|once it.s confirmed)\b/i.test(document.body.innerText||'')){
+                    classification='Provider accepted payment';message=line;break;
+                }
                 if(/\b(successful|successfully|payment completed|transaction completed|activated successfully|recharge complete)\b/i.test(line)){
                     classification='Provider reported success';message=line;break;
                 }
@@ -912,8 +918,8 @@ class FaseyhaAssistActivity : Activity() {
                     providerResultNoticeShown=true
                     val providerMessage=result.optString("message").take(350)
                     state.text="Faseyha response: $classification. Verify the provider transaction in Wallet."
-                    if(classification=="Provider reported success") {
-                        state.text="Faseyha reports success. Checking Wallet and matching receipt without resubmitting."
+                    if(classification=="Provider reported success" || classification=="Provider accepted payment") {
+                        state.text="Faseyha accepted the request. Verifying final Wallet status without resubmitting."
                         web.postDelayed({if(!isFinishing)startInternalWalletCheck()},800)
                     }else {
                         AlertDialog.Builder(this).setTitle("Faseyha response — $classification")
