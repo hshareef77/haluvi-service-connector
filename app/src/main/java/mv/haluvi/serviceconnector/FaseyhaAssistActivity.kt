@@ -618,12 +618,23 @@ class FaseyhaAssistActivity : Activity() {
                 return /(?:^|[\s_-])(selected|active|checked|current)(?:[\s_-]|$)/.test(cls);
             }
             const selected=selector.filter(chosen);
-            const operatorMatch=summary.toLowerCase().includes(operatorName.toLowerCase()) ||
-                (selector.length===3 && selected.length===1 &&
-                    tidy(selected[0].innerText||selected[0].getAttribute('aria-label')).toLowerCase()===operatorName.toLowerCase());
+            const explicitTab=selector.length===3 && selected.length===1 &&
+                tidy(selected[0].innerText||selected[0].getAttribute('aria-label')).toLowerCase()===operatorName.toLowerCase();
+            // BillPay renders "Ooredoo / Supernet" and a Quick Pay card instead of an
+            // Order summary. Verify its provider-specific heading and card.
+            const heading=Array.from(document.querySelectorAll('h1,h2,h3,h4,[role="heading"]'))
+                .filter(visible).map(x=>tidy(x.innerText||x.textContent).toLowerCase());
+            const providerCard=body.toLowerCase().includes('pay any '+operatorName.toLowerCase()) ||
+                (operatorName==='Ooredoo' && body.toLowerCase().includes('pay any ooredoo postpaid'));
+            const providerHeading=heading.some(x=>x===operatorName.toLowerCase() ||
+                x.startsWith(operatorName.toLowerCase()+' /'));
+            const billOperatorMatch=explicitTab || (providerHeading && providerCard);
+            const operatorMatch=action==='Pay' ? billOperatorMatch :
+                (summary.toLowerCase().includes(operatorName.toLowerCase()) || explicitTab);
             return JSON.stringify({summary:summary,found:candidates.length,enabled:enabled.length,
                 numberMatch:numberMatch,amountMatch:amountMatch,invalid:invalid,
                 operatorMatch:operatorMatch,selectedOperator:selected.length===1?tidy(selected[0].innerText):'',
+                providerHeading:providerHeading,providerCard:providerCard,
                 operatorControlCount:selector.length});
         })(__TARGET__,__MONEY__,__OP__);"""
             .replace("__ACTION__",JSONObject.quote(if(serviceIndex==0)"Recharge" else "Pay"))
@@ -634,7 +645,7 @@ class FaseyhaAssistActivity : Activity() {
             try{
                 val data=JSONObject(org.json.JSONArray("[$raw]").getString(0))
                 val summary=data.optString("summary")
-                if(summary.isNotBlank() && data.optInt("enabled")==1 &&
+                if((serviceIndex==2 || summary.isNotBlank()) && data.optInt("enabled")==1 &&
                     data.optBoolean("numberMatch") && data.optBoolean("amountMatch") &&
                     data.optBoolean("operatorMatch")) {
                     reviewFinalAction(target,money)
@@ -649,7 +660,7 @@ class FaseyhaAssistActivity : Activity() {
                     val reason=when {
                         !data.optBoolean("numberMatch") || !data.optBoolean("amountMatch") ->
                             "The provider form did not retain the recipient or amount."
-                        summary.isBlank() ->
+                        summary.isBlank() && serviceIndex!=2 ->
                             "Faseyha has not generated an order summary for this account."
                         !data.optBoolean("operatorMatch") ->
                             "Faseyha operator could not be verified from its order summary or active operator tab. No payment is authorized."
