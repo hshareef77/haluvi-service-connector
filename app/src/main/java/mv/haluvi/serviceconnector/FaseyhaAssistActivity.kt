@@ -334,10 +334,17 @@ class FaseyhaAssistActivity : Activity() {
             return
         }
         if (Uri.parse(web.url ?: "").path != expected) {
-            openFaseyhaPath(expected)
             pendingOperator = true
             pendingPreparation = true
+            openFaseyhaPath(expected)
             state.text = "Opening provider service and preparing automatically."
+            return
+        }
+        // The service selector may have scheduled a provider operator click.
+        // Do not fill fields against the previous operator while that runs.
+        if(pendingOperator) {
+            pendingPreparation=true
+            state.text="Waiting for selected provider operator before preparing the form."
             return
         }
         prepareWhenReady(0)
@@ -345,6 +352,11 @@ class FaseyhaAssistActivity : Activity() {
 
     private fun prepareWhenReady(attempt:Int) {
         if (!isTrusted() || Uri.parse(web.url ?: "").path != selectedPath()) return
+        if(pendingOperator) {
+            if(attempt<15)web.postDelayed({prepareWhenReady(attempt+1)},650)
+            else message("Provider operator selection is incomplete. No payment submitted.")
+            return
+        }
         if (serviceIndex == 1) { prepare(); return }
         if(attempt>=15) { message("Provider form is not ready. Check operator selection and try Continue again. No payment was submitted."); return }
         val js = """(function(){return Array.from(document.querySelectorAll('input')).filter(x=>x.getClientRects().length>0 && !x.disabled && !x.readOnly && !/hidden|password|submit|button|radio|checkbox/.test(x.type)).length})()"""
