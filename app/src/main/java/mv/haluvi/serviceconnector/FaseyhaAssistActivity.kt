@@ -602,10 +602,29 @@ class FaseyhaAssistActivity : Activity() {
             const amountMatch=inputs.some(x=>Number(x.value)===Number(amount));
             const invalid=inputs.filter(x=>x.required && !x.checkValidity())
                 .map(x=>tidy(x.getAttribute('aria-label')||x.placeholder||x.name||x.id).slice(0,60));
-            const operatorMatch=summary.toLowerCase().includes(operatorName.toLowerCase());
+            // Faseyha BillPay shows its operator in an active tab above the form.
+            // The order summary may omit the operator, so verify the selected
+            // tab instead of incorrectly treating its absence as a mismatch.
+            const selector=Array.from(document.querySelectorAll('button,[role="tab"],[role="radio"],[role="button"]'))
+                .filter(visible).filter(x=>{
+                    const label=tidy(x.innerText||x.getAttribute('aria-label')||'').toLowerCase();
+                    return ['dhiraagu','ooredoo','medianet'].includes(label);
+                });
+            function chosen(x){
+                if(x.getAttribute('aria-selected')==='true'||x.getAttribute('aria-checked')==='true'||
+                    x.getAttribute('data-state')==='active'||x.getAttribute('data-state')==='checked'||
+                    x.getAttribute('aria-pressed')==='true') return true;
+                const cls=(' '+(typeof x.className==='string'?x.className:'')+' ').toLowerCase();
+                return /(?:^|[\s_-])(selected|active|checked|current)(?:[\s_-]|$)/.test(cls);
+            }
+            const selected=selector.filter(chosen);
+            const operatorMatch=summary.toLowerCase().includes(operatorName.toLowerCase()) ||
+                (selector.length===3 && selected.length===1 &&
+                    tidy(selected[0].innerText||selected[0].getAttribute('aria-label')).toLowerCase()===operatorName.toLowerCase());
             return JSON.stringify({summary:summary,found:candidates.length,enabled:enabled.length,
                 numberMatch:numberMatch,amountMatch:amountMatch,invalid:invalid,
-                operatorMatch:operatorMatch});
+                operatorMatch:operatorMatch,selectedOperator:selected.length===1?tidy(selected[0].innerText):'',
+                operatorControlCount:selector.length});
         })(__TARGET__,__MONEY__,__OP__);"""
             .replace("__ACTION__",JSONObject.quote(if(serviceIndex==0)"Recharge" else "Pay"))
             .replace("__TARGET__",JSONObject.quote(target))
