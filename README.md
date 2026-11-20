@@ -1,5 +1,9 @@
 # Haluvi Service Connector
 
+## v2.30 correct recipient from Faseyha tax invoices
+
+Based on a real Faseyha tax invoice: the recipient is read from the item row (the line under the service name, for example "Dhiraagu Reload / 7979123"), never from "Bill to", which is the Faseyha account holder. Version 2.29 could show the account holder's number as the recipient; receipts saved by earlier versions are discarded and read again.
+
 ## v2.29 recharge receipts and receipt text copy
 
 Recharge and Raastas receipts were never read (the Wallet showed "Recipient not identified"), so those payments were confirmed by the exact balance drop instead. Receipts are now recognized by the Wallet reference itself and accept more total labels. **View in Wallet, transaction, Copy receipt text** copies a receipt's visible text so its exact layout can be checked.

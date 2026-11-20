@@ -357,11 +357,15 @@ const labelled=(t.match(/(?:receipt|invoice|reference|transaction)\s*(?:no\.?|nu
 const reference=want&&new RegExp('(^|[^A-Z0-9])'+want+'([^A-Z0-9]|$)','i').test(t)?want:labelled;
 let total=(t.match(/(?:total amount|amount paid)\s*(?:MVR|Rf|ރ|ރ\.)?\s*([\d,]+(?:\.\d{1,2})?)/i)||[])[1]||'';
 if(!total){const v=H.labelledTotal(t);if(Number.isFinite(v))total=String(v);}
-const service=(t.match(/description\s+([\s\S]{0,120}?)(?:total amount|amount paid|total|amount|qty|quantity)/i)||[])[1]||'';
-const billTo=(t.match(/bill to\s+([A-Z0-9-]{5,32})/i)||[])[1]||'';
-const cands=(service.match(/\b[A-Z0-9-]{7,30}\b/gi)||[]).filter(x=>/\d/.test(x));
-return JSON.stringify({reference:reference,account:cands.find(x=>/^BB/i.test(x))||cands[cands.length-1]||billTo,
-  amount:total,description:H.tidy(service).slice(0,120),status:/\bpaid in full\b/i.test(t)?'Paid in full':'Not identified'});""", "expected" to expected)
+// Faseyha tax invoice: the item row sits between the "Description Qty Unit price Amount"
+// header and "Subtotal". Its first line is the service; the recipient follows it.
+// "Bill to" is the Faseyha account holder, never the recipient.
+const item=(t.match(/description[^\n]*\n([\s\S]{0,400}?)\n\s*(?:subtotal|total amount|gst\b)/i)||
+  t.match(/description\s+([\s\S]{0,160}?)(?:subtotal|total amount|amount paid)/i)||[])[1]||'';
+const lines=item.split(/\n/).map(H.tidy).filter(Boolean);
+const tokens=lines.join(' ').split(/\s+/).filter(x=>/^[A-Z0-9-]{5,30}$/i.test(x)&&/\d/.test(x));
+return JSON.stringify({v:2,reference:reference,account:tokens.find(x=>/^BB/i.test(x))||tokens[0]||'',
+  amount:total,description:(lines[0]||'').slice(0,120),status:/\bpaid in full\b/i.test(t)?'Paid in full':'Not identified'});""", "expected" to expected)
 
     /** Visible text of a receipt page, copied only when the person asks for it. */
     val RECEIPT_TEXT = script("""return JSON.stringify({path:location.pathname,text:H.body().slice(0,4000)});""")

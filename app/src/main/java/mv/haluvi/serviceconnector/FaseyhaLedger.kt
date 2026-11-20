@@ -98,7 +98,8 @@ object FaseyhaReceipts {
             val obj = JSONObject(raw)
             for (key in obj.keys()) {
                 val data = obj.optJSONObject(key) ?: continue
-                if (key.matches(referencePattern) && key.equals(data.optString("reference"), true)) result[key] = data
+                // Receipts read before format 2 could show the account holder as the recipient; read them again.
+                if (data.optInt("v") >= 2 && key.matches(referencePattern) && key.equals(data.optString("reference"), true)) result[key] = data
             }
         } catch (_: Exception) {}
         return result
