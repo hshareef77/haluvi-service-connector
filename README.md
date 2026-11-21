@@ -1,5 +1,9 @@
 # Haluvi Service Connector
 
+## v2.33 Thaana AI audio download and playback speed
+
+Confirmed on the phone with 2.32: text entry, Voice Library (54 voices with descriptions and preview buttons) and generation work. Copying the result failed because Thaana AI serves audio from a separate server that the page script may not read. The app now downloads that address itself (with the signed-in session), falling back to the page copy for in-page audio. The native player adds **Speed** (0.75x to 2x). The Settings panel contains only the Voice Library, so voice choice is the native setting.
+
 ## v2.32 native Thaana AI text to speech
 
 Thaana AI, Text to speech is native. Playback controls appear only after speech is generated: a text box, **Attach text file** (the site has no upload, so the app reads a text file into the box), **Voice: name. Change** (read from Thaana AI's Settings panel Voice Library: name, Male/Female and description; locked cloned voices are marked; each offers **Preview**, which plays Thaana AI's own sample, and **Choose this voice**; Back to voices stops a sample), **Generate speech** with progress, then **Play/Pause**, **Stop** and **Save audio** (Android save dialog). The app types into Thaana AI's editor, presses Generate Speech, copies the generated audio into the app and plays it natively. More options has Show website page, page, voice list and settings reports, Reload and sign-in. Native settings follow once the settings report is known.

@@ -202,11 +202,16 @@ out.push('Voice entries: '+voiceEntries().map(v=>v.name+' '+v.tag+(v.preview?' (
 return JSON.stringify({lines:out.slice(0,140)});""")
 
     /** Copies the newest generated audio into the page's memory as base64, for the app to read. */
+    /** Address of the newest generated audio. */
+    val AUDIO_SOURCE = FaseyhaSite.script("""
+const srcs=Array.from(document.querySelectorAll('audio')).map(x=>x.currentSrc||x.src).filter(Boolean);
+return JSON.stringify({src:srcs[srcs.length-1]||''});""")
+
     val AUDIO_START = FaseyhaSite.script("""
 const srcs=Array.from(document.querySelectorAll('audio')).map(x=>x.currentSrc||x.src).filter(Boolean);
 const src=srcs[srcs.length-1];if(!src)return JSON.stringify({ok:false});
 window.__haluviAudio={state:'loading'};
-fetch(src,{credentials:'include'}).then(r=>r.blob()).then(b=>new Promise((res,rej)=>{const f=new FileReader();
+fetch(src).then(r=>r.blob()).then(b=>new Promise((res,rej)=>{const f=new FileReader();
   f.onload=()=>res({data:String(f.result).split(',')[1]||'',type:b.type||''});f.onerror=rej;f.readAsDataURL(b);}))
   .then(x=>{window.__haluviAudio={state:'ready',data:x.data,type:x.type};})
   .catch(e=>{window.__haluviAudio={state:'error',reason:String(e).slice(0,120)};});
@@ -258,6 +263,8 @@ class ThaanaSpeechActivity : Activity() {
     private var audioFile: File? = null
     private var audioType = "audio/mpeg"
     private var media: MediaPlayer? = null
+    private lateinit var speedButton: Button
+    private var speed = 1.0f
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -275,6 +282,7 @@ class ThaanaSpeechActivity : Activity() {
         player = screen.section()
         playButton = screen.button("Play", player) { togglePlay() }
         screen.button("Stop", player) { stopPlayback() }
+        speedButton = screen.button("Speed: 1.0x. Change", player) { chooseSpeed() }
         screen.button("Save audio", player) { saveAudio() }
         lateinit var moreToggle: Button
         lateinit var more: LinearLayout
@@ -504,7 +512,80 @@ class ThaanaSpeechActivity : Activity() {
         }
     }
 
+    /**
+     * Web addresses are downloaded by the app itself: the audio is served from another
+     * server that does not let the page's script read it. Page-only (blob) audio is
+     * copied through the page.
+     */
     private fun fetchAudio(token: Int) {
+        page.eval(ThaanaSite.AUDIO_SOURCE) { r ->
+            if (token != run) return@eval
+            val src = r?.optString("src").orEmpty()
+            if (src.startsWith("https://")) downloadAudio(token, src) else copyThroughPage(token)
+        }
+    }
+
+    private fun downloadAudio(token: Int, src: String) {
+        say("Downloading the speech…")
+        val agent = page.web.settings.userAgentString
+        val cookies = android.webkit.CookieManager.getInstance().getCookie(src)
+        Thread {
+            var bytes: ByteArray? = null
+            var type = ""
+            var problem = ""
+            try {
+                val connection = (java.net.URL(src).openConnection() as java.net.HttpURLConnection).apply {
+                    connectTimeout = 20_000; readTimeout = 60_000
+                    setRequestProperty("User-Agent", agent)
+                    setRequestProperty("Referer", ThaanaSite.BASE + ThaanaSite.SPEECH_PATH)
+                    if (!cookies.isNullOrBlank()) setRequestProperty("Cookie", cookies)
+                }
+                try {
+                    if (connection.responseCode !in 200..299) problem = "the server answered ${connection.responseCode}"
+                    else {
+                        type = connection.contentType.orEmpty()
+                        val data = connection.inputStream.use { input ->
+                            val out = java.io.ByteArrayOutputStream()
+                            val buffer = ByteArray(64 * 1024)
+                            while (true) {
+                                val n = input.read(buffer)
+                                if (n < 0) break
+                                out.write(buffer, 0, n)
+                                if (out.size() > 100 * 1024 * 1024) throw java.io.IOException("larger than 100 MB")
+                            }
+                            out.toByteArray()
+                        }
+                        bytes = data
+                    }
+                } finally { connection.disconnect() }
+            } catch (e: Exception) { problem = e.message ?: e.javaClass.simpleName }
+            runOnUiThread {
+                if (token != run || isFinishing) return@runOnUiThread
+                val data = bytes
+                if (data != null) {
+                    if (type.startsWith("audio/") || type.startsWith("video/")) audioType = type.substringBefore(';')
+                    else audioType = guessType(src)
+                    saveBytes(data)
+                } else {
+                    say("Download failed ($problem). Trying through the page…")
+                    copyThroughPage(token)
+                }
+            }
+        }.start()
+    }
+
+    private fun guessType(src: String): String {
+        val path = android.net.Uri.parse(src).path.orEmpty().lowercase()
+        return when {
+            path.endsWith(".wav") -> "audio/wav"
+            path.endsWith(".ogg") || path.endsWith(".opus") -> "audio/ogg"
+            path.endsWith(".m4a") || path.endsWith(".mp4") || path.endsWith(".aac") -> "audio/mp4"
+            path.endsWith(".webm") -> "audio/webm"
+            else -> "audio/mpeg"
+        }
+    }
+
+    private fun copyThroughPage(token: Int) {
         page.eval(ThaanaSite.AUDIO_START) { r ->
             if (token != run) return@eval
             if (r?.optBoolean("ok") != true) { fail("The generated audio could not be found."); return@eval }
@@ -546,8 +627,12 @@ class ThaanaSpeechActivity : Activity() {
     }
 
     private fun saveToCache(base64: String) {
+        val bytes = try { Base64.decode(base64, Base64.DEFAULT) } catch (_: Exception) { ByteArray(0) }
+        saveBytes(bytes)
+    }
+
+    private fun saveBytes(bytes: ByteArray) {
         try {
-            val bytes = Base64.decode(base64, Base64.DEFAULT)
             if (bytes.isEmpty()) { fail("The generated audio was empty."); return }
             cacheDir.listFiles { f -> f.name.startsWith("thaana-speech.") }?.forEach { it.delete() }
             val file = File(cacheDir, "thaana-speech." + extension())
@@ -563,6 +648,7 @@ class ThaanaSpeechActivity : Activity() {
             generateButton.isEnabled = true
             player.visibility = View.VISIBLE
             playButton.text = "Play"
+            applySpeed()
             say("Speech ready, ${prepared.duration / 1000} seconds. Play or save it.")
         } catch (e: Exception) {
             fail("The audio could not be prepared for playback.")
@@ -582,6 +668,25 @@ class ThaanaSpeechActivity : Activity() {
         val m = media ?: return
         if (m.isPlaying) { m.pause(); playButton.text = "Play"; say("Paused.") }
         else { m.start(); playButton.text = "Pause"; say("Playing.") }
+    }
+
+    private fun chooseSpeed() {
+        val speeds = floatArrayOf(0.75f, 1.0f, 1.25f, 1.5f, 2.0f)
+        val labels = speeds.map { "${it}x" }.toTypedArray()
+        AlertDialog.Builder(this).setTitle("Playback speed")
+            .setSingleChoiceItems(labels, speeds.indexOfFirst { it == speed }) { d, i ->
+                d.dismiss(); speed = speeds[i]; applySpeed(); say("Playback speed ${speed}x.")
+            }.setNegativeButton("Cancel", null).show()
+    }
+
+    private fun applySpeed() {
+        speedButton.text = "Speed: ${speed}x. Change"
+        val m = media ?: return
+        try {
+            val wasPlaying = m.isPlaying
+            m.playbackParams = m.playbackParams.setSpeed(speed)
+            if (!wasPlaying) m.pause() // setting the speed starts playback
+        } catch (_: Exception) {}
     }
 
     private fun stopPlayback() {
