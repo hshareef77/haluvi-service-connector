@@ -193,11 +193,21 @@ for(const r of panelRoots()){
 }
 return JSON.stringify({ok:true});""")
 
+    /** Switches the Settings panel to its History tab (or back to Settings). */
+    fun panelTab(name: String) = FaseyhaSite.script("""$POPUP
+for(const r of panelRoots()){
+  const t=Array.from(r.querySelectorAll('[role="tab"],button')).filter(H.visible).find(x=>H.low(H.label(x))===H.low(wanted));
+  if(t){t.click();return JSON.stringify({ok:true});}
+}
+return JSON.stringify({ok:false});""", "wanted" to name)
+
     /** Controls inside the open dialog or popup, for building native settings. */
     val POPUP_REPORT = FaseyhaSite.script("""$POPUP
 const out=[];
 for(const r of panelRoots()){
-  out.push('Panel text: '+H.tidy(r.innerText).slice(0,800));
+  out.push('Panel text: '+H.tidy(r.innerText).slice(0,1500));
+  for(const a of r.querySelectorAll('a[href]'))out.push('link: '+(H.tidy(a.innerText)||a.getAttribute('aria-label')||'(no label)').slice(0,60)+' -> '+(a.getAttribute('href')||'').split('?')[0].slice(0,80)+(a.hasAttribute('download')?' [download]':''));
+  for(const m of r.querySelectorAll('audio,video'))out.push('media: source '+((m.currentSrc||m.src||'').split(':')[0]||'none'));
   for(const x of r.querySelectorAll('input,select,textarea,button,[role="slider"],[role="switch"],[role="option"],[role="menuitem"],[role="radio"],[role="combobox"]')){
     const role=x.getAttribute('role')||x.tagName.toLowerCase()+(x.type?'/'+x.type:'');
     const owner=x.parentElement&&x.parentElement.closest('[role="option"],[role="menuitem"],[role="menuitemradio"],[role="radio"],li');
@@ -276,6 +286,10 @@ class ThaanaSpeechActivity : Activity() {
     private var audioFile: File? = null
     private var audioType = "audio/mpeg"
     private var media: MediaPlayer? = null
+    // Long text is generated in parts; finished parts survive a failure so it can resume.
+    private var parts: List<String> = emptyList()
+    private var partsText = ""
+    private var partIndex = 0
     private lateinit var clearButton: Button
     private lateinit var clearSlot: LinearLayout
     private lateinit var saveButton: Button
@@ -330,6 +344,8 @@ class ThaanaSpeechActivity : Activity() {
         screen.button("Copy page report", more) { copyPageReport() }
         screen.button("Copy voice list report", more) { copyPopupReport(ThaanaSite.VOICE_OPEN_SETTINGS, "voice list") }
         screen.button("Copy settings report", more) { copyPopupReport(ThaanaSite.VOICE_OPEN_SETTINGS, "settings") }
+        screen.button("Copy history report", more) { copyHistoryReport() }
+        screen.button("Delete stored speech", more) { deleteStoredSpeech() }
         screen.button("Reload page", more) { reloadPage() }
         screen.button("Open Thaana AI website and sign in", more) { openThaanaWebsite() }
         (clearButton.parent as? android.view.ViewGroup)?.removeView(clearButton)
@@ -610,25 +626,70 @@ class ThaanaSpeechActivity : Activity() {
 
     // ---------- generate ----------
 
+    private fun partFile(i: Int) = File(speechDir(), "part-$i.tmp")
+    private fun clearPartFiles() { speechDir().listFiles { f -> f.name.startsWith("part-") || f.name == "incoming.tmp" }?.forEach { it.delete() } }
+    private fun partPrefix() = if (parts.size > 1) "Part ${partIndex + 1} of ${parts.size}: " else ""
+
     private fun generate() {
         if (busy) return
         if (!pageReady) { say("The page is still loading. Try again in a moment."); return }
         val text = input.text.toString().trim()
         if (text.isEmpty()) { input.error = "Type or attach the text to speak"; input.requestFocus(); return }
+        val resume = parts.size > 1 && partsText == text && partIndex in 1 until parts.size &&
+            (0 until partIndex).all { partFile(it).length() > 0 }
+        if (!resume) {
+            clearPartFiles()
+            parts = SpeechParts.split(text)
+            partsText = text
+            partIndex = 0
+        }
         busy = true
         val token = ++run
         generateButton.isEnabled = false
-        generateButton.text = "Generating…"
         stopPlayback()
-        say("Entering the text on Thaana AI…")
+        if (parts.size > 1) say(if (resume) "Continuing with part ${partIndex + 1} of ${parts.size}."
+            else "Long text: ${parts.size} parts of up to ${SpeechParts.MAX_PART} characters, generated one after another.")
+        generatePart(token)
+    }
+
+    private fun generatePart(token: Int) {
+        if (token != run) return
+        generateButton.text = partPrefix() + "Generating…"
         page.eval(ThaanaSite.STATE) { before ->
             val oldAudio = before?.optJSONArray("audio")?.let { a -> (0 until a.length()).map { a.optString(it) }.toSet() } ?: emptySet()
-            page.eval(ThaanaSite.setText(text)) { r ->
+            page.eval(ThaanaSite.setText(parts[partIndex])) { r ->
                 if (token != run) return@eval
                 if (r?.optBoolean("ok") != true) { fail(r?.optString("reason")?.ifBlank { null } ?: "The text could not be entered on Thaana AI."); return@eval }
                 page.after(700) { pressGenerate(token, oldAudio, 0) }
             }
         }
+    }
+
+    /** One part's audio is stored; continue with the next part, or join them all. */
+    private fun partDone(token: Int, file: File) {
+        if (token != run) return
+        val dest = partFile(partIndex)
+        dest.delete()
+        if (!file.renameTo(dest)) { file.copyTo(dest, overwrite = true); file.delete() }
+        partIndex++
+        if (partIndex < parts.size) {
+            generateButton.text = partPrefix() + "starting…"
+            page.after(1500) { generatePart(token) }
+            return
+        }
+        val files = parts.indices.map { partFile(it) }
+        generateButton.text = if (files.size > 1) "Joining ${files.size} parts…" else "Preparing…"
+        Thread {
+            val joined = File(speechDir(), "joined.tmp")
+            val problem = try { SpeechParts.join(files, joined) } catch (e: Exception) { e.message ?: "storage error" }
+            runOnUiThread {
+                if (token != run) return@runOnUiThread
+                if (problem != null) { joined.delete(); fail("The parts could not be joined: $problem."); return@runOnUiThread }
+                clearPartFiles()
+                parts = emptyList(); partIndex = 0
+                useNewSpeech(joined)
+            }
+        }.start()
     }
 
     private fun pressGenerate(token: Int, oldAudio: Set<String>, attempt: Int) {
@@ -648,12 +709,12 @@ class ThaanaSpeechActivity : Activity() {
             when {
                 audio.any { it !in oldAudio } -> { say("Speech generated. Preparing playback…"); fetchAudio(token) }
                 messages.isNotEmpty() && attempt > 2 && s?.optBoolean("busy") != true -> fail("Thaana AI says: ${messages.first()}")
-                attempt >= 80 -> fail("Speech was not ready after two minutes. Use More options, Copy page report, and send it.")
+                attempt >= 400 -> fail("Speech was not ready after ten minutes. Use More options, Copy page report, and send it.")
                 else -> {
                     val seconds = (attempt + 1) * 3 / 2
                     val percent = s?.optString("percent").orEmpty()
-                    generateButton.text = if (percent.isNotBlank()) "Generating… $percent%" else "Generating… $seconds seconds"
-                    if (attempt % 5 == 4) say("Generating speech… " + if (percent.isNotBlank()) "$percent%." else "$seconds seconds.")
+                    generateButton.text = partPrefix() + if (percent.isNotBlank()) "Generating… $percent%" else "Generating… $seconds seconds"
+                    if (attempt % 10 == 9) say(partPrefix() + "generating… " + if (percent.isNotBlank()) "$percent%." else "$seconds seconds.")
                     page.after(1500) { waitForAudio(token, oldAudio, attempt + 1) }
                 }
             }
@@ -705,7 +766,7 @@ class ThaanaSpeechActivity : Activity() {
                                 done += n
                                 if (total > 0) {
                                     val pct = (done * 100 / total).toInt()
-                                    if (pct / 10 != shown / 10) { shown = pct; runOnUiThread { if (token == run) generateButton.text = "Downloading… $pct%" } }
+                                    if (pct / 10 != shown / 10) { shown = pct; runOnUiThread { if (token == run) generateButton.text = partPrefix() + "Downloading… $pct%" } }
                                 }
                             }
                         } }
@@ -719,7 +780,7 @@ class ThaanaSpeechActivity : Activity() {
                 if (data != null) {
                     if (type.startsWith("audio/") || type.startsWith("video/")) audioType = type.substringBefore(';')
                     else audioType = guessType(src)
-                    if (target.length() == 0L) fail("The downloaded audio was empty.") else useNewSpeech(target)
+                    if (target.length() == 0L) fail("The downloaded audio was empty.") else partDone(token, target)
                 } else {
                     say("Download failed ($problem). Trying through the page…")
                     copyThroughPage(token)
@@ -792,7 +853,7 @@ class ThaanaSpeechActivity : Activity() {
         try {
             val file = File(speechDir(), "incoming.tmp")
             file.writeBytes(bytes)
-            useNewSpeech(file)
+            partDone(run, file)
         } catch (e: Exception) { fail("The audio could not be stored: ${e.message ?: "storage error"}.") }
     }
 
@@ -835,6 +896,20 @@ class ThaanaSpeechActivity : Activity() {
         if (prepareSpeech(file)) say("Your last generated speech is ready to play or save.")
     }
 
+    /** Frees the space used by the stored speech (saved copies elsewhere are not touched). */
+    private fun deleteStoredSpeech() {
+        if (busy) { say("Wait until generation has finished."); return }
+        media?.release(); media = null
+        audioFile = null
+        val freed = speechDir().listFiles()?.sumOf { it.length() } ?: 0L
+        speechDir().listFiles()?.forEach { it.delete() }
+        parts = emptyList(); partIndex = 0
+        audioPrefs.edit().clear().apply()
+        player.visibility = View.GONE
+        generateButton.text = "Generate speech"
+        say("Stored speech deleted, " + android.text.format.Formatter.formatShortFileSize(this, freed) + " freed.")
+    }
+
     private fun seekBy(ms: Int) {
         val m = media ?: return
         val target = (m.currentPosition + ms).coerceIn(0, m.duration)
@@ -846,7 +921,12 @@ class ThaanaSpeechActivity : Activity() {
         busy = false
         run++
         generateButton.isEnabled = true
-        generateButton.text = if (media != null) "Regenerate speech" else "Generate speech"
+        generateButton.text = when {
+            parts.size > 1 && partIndex > 0 -> "Retry from part ${partIndex + 1} of ${parts.size}"
+            media != null -> "Regenerate speech"
+            else -> "Generate speech"
+        }
+        if (parts.size > 1 && partIndex > 0) { say("$message Parts 1 to $partIndex are kept; press Retry to continue."); return }
         say(message)
     }
 
@@ -985,6 +1065,33 @@ class ThaanaSpeechActivity : Activity() {
                 append("\nTyped text and passwords are not included.")
             }
             copy("Page report", text)
+        }
+    }
+
+    /** Opens Settings, switches to its History tab, reports what is there, then closes it. */
+    private fun copyHistoryReport() {
+        if (!pageReady) { say("The page is still loading."); return }
+        say("Reading Thaana AI history…")
+        page.eval(ThaanaSite.VOICE_OPEN_SETTINGS) {
+            page.after(1000) {
+                page.eval(ThaanaSite.panelTab("History")) { t ->
+                    if (t?.optBoolean("ok") != true) { say("The History tab was not found."); return@eval }
+                    page.after(1500) {
+                        page.eval(ThaanaSite.POPUP_REPORT) { r ->
+                            page.eval(ThaanaSite.panelTab("Settings")) {}
+                            page.eval(ThaanaSite.CLOSE_POPUP) {}
+                            val lines = r?.optJSONArray("lines")
+                            val text = buildString {
+                                append("Thaana AI history report\nApp version: ").append(appVersion()).append('\n')
+                                if (lines == null || lines.length() == 0) append("No history panel was found.\n")
+                                else for (i in 0 until lines.length()) append("- ").append(lines.optString(i)).append('\n')
+                            }
+                            copy("History report", text)
+                            say("History report copied. Paste it in a message.")
+                        }
+                    }
+                }
+            }
         }
     }
 

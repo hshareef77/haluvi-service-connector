@@ -1,5 +1,12 @@
 # Haluvi Service Connector
 
+## v2.37 long text in parts, joined into one audio
+
+- Text over 9,000 characters is split between paragraphs, then after sentences, then at spaces (never inside a word; no text lost). Parts are generated one after another automatically ("Part 2 of 3: generating…") and joined into one audio file; WAV parts are joined into one valid WAV.
+- If a part fails, finished parts are kept and the Generate button becomes "Retry from part N"; changing the text starts over.
+- Only one speech is stored in the app (replaced by the next generation; part files are deleted after joining). More options, Delete stored speech frees the space. Generation may take up to ten minutes per part.
+- More options, Copy history report reads Thaana AI's History tab, for building native History (online playback and direct download) next.
+
 ## v2.36 bottom player, clear text, progress and reliable saving
 
 - Generated speech is kept in the app's own storage instead of Android's clearable cache, and is restored if Android recreates the screen. "The generated audio is no longer available" no longer happens for long recordings.
