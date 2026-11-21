@@ -408,7 +408,8 @@ class ThaanaSpeechActivity : Activity() {
 
     private fun showVoicePanel(voices: List<Voice>) {
         voicePanel.removeAllViews()
-        screen.button("Stop preview", voicePanel) { stopPreview(); say("Preview stopped.") }
+        previewButtons.clear()
+        previewing = null
         screen.button("Close voices", voicePanel) { closeVoicePanel() }
         for (v in voices) {
             val current = v.active || v.name.equals(voice, true)
@@ -416,11 +417,15 @@ class ThaanaSpeechActivity : Activity() {
                 if (current) "current voice" else null, if (v.locked) "locked" else null).joinToString(", ") +
                 (if (v.description.isNotBlank()) ": " + v.description else "")
             val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-            row.addView(Button(this).apply {
+            val voiceRow = Button(this).apply {
                 text = info; isAllCaps = false; minHeight = screen.dp(56); gravity = Gravity.START or Gravity.CENTER_VERTICAL
                 contentDescription = "Preview $info"
-                setOnClickListener { previewVoice(v.name, v.preview) }
-            }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+                tag = info
+                // One button: tap to play the preview, tap again to stop it.
+                setOnClickListener { if (previewing == v.name) { stopPreview(); say("${v.name} preview stopped.") } else previewVoice(v.name, v.preview) }
+            }
+            previewButtons[v.name] = voiceRow
+            row.addView(voiceRow, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
             row.addView(Button(this).apply {
                 text = if (current) "Chosen" else "Choose"; minHeight = screen.dp(56)
                 contentDescription = if (current) "${v.name} is the current voice" else "Choose ${v.name}"
@@ -434,6 +439,16 @@ class ThaanaSpeechActivity : Activity() {
         say("${voices.size} voices listed below the voice button. Tap a voice to hear it, or Choose to use it.")
     }
 
+    private var previewing: String? = null
+    private val previewButtons = mutableMapOf<String, Button>()
+
+    /** Marks which voice is previewing so its button reads as Stop. */
+    private fun setPreviewing(name: String?) {
+        previewing?.let { old -> previewButtons[old]?.let { it.contentDescription = "Preview " + it.tag; it.text = it.tag as String } }
+        previewing = name
+        name?.let { n -> previewButtons[n]?.let { it.contentDescription = "Stop preview, " + it.tag; it.text = "Stop: " + it.tag } }
+    }
+
     private fun closeVoicePanel() {
         stopPreview()
         voicePanel.visibility = View.GONE
@@ -445,6 +460,7 @@ class ThaanaSpeechActivity : Activity() {
     private fun stopPreview() {
         previewPlayer?.release()
         previewPlayer = null
+        setPreviewing(null)
         page.eval(ThaanaSite.STOP_MEDIA) {}
     }
 
@@ -452,21 +468,23 @@ class ThaanaSpeechActivity : Activity() {
     private fun previewVoice(name: String, hasPreview: Boolean) {
         if (!hasPreview) { say("Thaana AI has no preview for $name."); return }
         stopPreview()
+        setPreviewing(name)
         say("Loading the $name preview…")
         fun attempt(reopened: Boolean) {
             page.eval(ThaanaSite.voicePreview(name)) { r ->
                 if (r?.optString("reason") == "closed" && !reopened) { withVoiceList { attempt(true) }; return@eval }
-                if (r?.optBoolean("ok") != true) { say(r?.optString("reason")?.ifBlank { null } ?: "The preview could not be started."); return@eval }
+                if (r?.optBoolean("ok") != true) { setPreviewing(null); say(r?.optString("reason")?.ifBlank { null } ?: "The preview could not be started."); return@eval }
                 val before = r.optInt("before")
                 fun find(n: Int) {
                     page.after(500) {
+                        if (previewing != name) return@after // stopped or another voice tapped
                         page.eval(ThaanaSite.previewSource(before)) { p ->
                             val src = p?.optString("src").orEmpty()
                             when {
                                 src.startsWith("https://") -> { page.eval(ThaanaSite.STOP_MEDIA) {}; playPreview(name, src) }
                                 src.isNotBlank() -> say("Playing the $name preview.")
                                 n < 10 -> find(n + 1)
-                                else -> say("The $name preview did not start. Use More options, Copy voice list report.")
+                                else -> { setPreviewing(null); say("The $name preview did not start. Use More options, Copy voice list report.") }
                             }
                         }
                     }
@@ -485,11 +503,11 @@ class ThaanaSpeechActivity : Activity() {
             previewPlayer = MediaPlayer().apply {
                 setDataSource(this@ThaanaSpeechActivity, android.net.Uri.parse(src), headers)
                 setOnPreparedListener { it.start(); say("Playing the $name preview.") }
-                setOnCompletionListener { say("$name preview finished.") }
-                setOnErrorListener { _, _, _ -> say("The $name preview could not be played."); true }
+                setOnCompletionListener { if (previewing == name) setPreviewing(null); say("$name preview finished.") }
+                setOnErrorListener { _, _, _ -> if (previewing == name) setPreviewing(null); say("The $name preview could not be played."); true }
                 prepareAsync()
             }
-        } catch (e: Exception) { say("The $name preview could not be played.") }
+        } catch (e: Exception) { setPreviewing(null); say("The $name preview could not be played.") }
     }
 
     private fun chooseThisVoice(name: String) {
