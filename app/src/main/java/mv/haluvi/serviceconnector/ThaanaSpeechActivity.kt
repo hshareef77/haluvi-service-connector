@@ -28,7 +28,35 @@ object ThaanaSite {
 const popupRoots=()=>H.all('[role="dialog"],[role="menu"],[role="listbox"],[data-radix-popper-content-wrapper],[aria-modal="true"]');
 const popupItems=()=>{const items=[];for(const r of popupRoots()){for(const x of r.querySelectorAll('[role="option"],[role="menuitem"],[role="menuitemradio"],[role="radio"],button,label')){
   if(!H.visible(x))continue;const l=H.opLabel(x);if(l&&l.length<=80&&!items.includes(l))items.push(l);}}return items;};
-const voiceEntries=()=>{const out=[],seen=new Set();
+// Thaana AI shows voices in its Settings side panel ("Voice Library"); older layouts use a menu.
+const panelRoots=()=>{const p=popupRoots();if(p.length)return p;
+  const vl=Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,div,span,p')).find(x=>x.children.length===0&&H.visible(x)&&/^voice library$/i.test(H.tidy(x.textContent)));
+  if(!vl)return [];let r=vl;
+  for(let i=0;i<10&&r.parentElement&&r.parentElement!==document.body;i++){r=r.parentElement;if(/\bhistory\b/i.test(r.innerText||'')&&/\bsettings\b/i.test(r.innerText||''))break;}
+  return [r];};
+const BADGE=/^(male|female|locked|neutral|child)$/i;
+const libraryRows=()=>{const out=[],seen=new Set();
+  for(const root of panelRoots()){
+    const badges=Array.from(root.querySelectorAll('*')).filter(x=>x.children.length<=1&&H.visible(x)&&BADGE.test(H.tidy(x.textContent)));
+    for(const b of badges){
+      let row=b;
+      for(let i=0;i<7&&row.parentElement&&row!==root;i++){row=row.parentElement;
+        if((row.innerText||'').split(/\n/).map(H.tidy).filter(Boolean).length>=3)break;}
+      const lines=(row.innerText||'').split(/\n/).map(H.tidy).filter(Boolean);
+      const count=Array.from(row.querySelectorAll('*')).filter(x=>x.children.length<=1&&BADGE.test(H.tidy(x.textContent))).length;
+      const name=(lines[0]||'').slice(0,60);
+      if(count!==1||!name||seen.has(name))continue;
+      seen.add(name);
+      const tag=H.tidy(b.textContent);
+      const inner=Array.from(row.querySelectorAll('button,[role="button"],img,[class*="avatar" i],[class*="rounded-full"]')).filter(x=>x!==row&&H.visible(x));
+      const preview=inner.find(x=>/preview|play|listen|sample/i.test(H.opLabel(x)+' '+(x.getAttribute('title')||'')+' '+(x.getAttribute('alt')||'')))||
+        inner.find(x=>!/locked|info/i.test(H.opLabel(x)+' '+(x.getAttribute('aria-label')||''))&&!H.tidy(x.innerText||''));
+      out.push({name:name,node:row,preview:preview||null,active:H.isActive(row),
+        tag:tag,description:(lines[1]||'').slice(0,90),locked:/^locked$/i.test(tag)});
+    }
+  }
+  return out;};
+const menuRows=()=>{const out=[],seen=new Set();
   for(const r of popupRoots()){
     let items=Array.from(r.querySelectorAll('[role="option"],[role="menuitem"],[role="menuitemradio"],[role="radio"],li'));
     if(!items.length)items=Array.from(r.querySelectorAll('button,label'));
@@ -38,13 +66,12 @@ const voiceEntries=()=>{const out=[],seen=new Set();
       if(!name||seen.has(name)||/^(preview|play|pause|stop|listen|close|cancel)\b/i.test(name))continue;
       seen.add(name);
       const inner=Array.from(x.querySelectorAll('button,[role="button"]')).filter(b=>b!==x&&H.visible(b));
-      const preview=inner.find(b=>/preview|play|listen|sample/i.test(H.opLabel(b)+' '+(b.getAttribute('title')||'')))||
-        inner.find(b=>!H.tidy(b.innerText))||
-        H.buttons().find(b=>r.contains(b)&&new RegExp('(preview|play|listen).*'+name.replace(/[^A-Za-z0-9 ]/g,'.'),'i').test(H.opLabel(b)+' '+(b.getAttribute('title')||'')));
-      out.push({name:name,node:x,preview:preview||null,active:H.isActive(x)});
+      const preview=inner.find(b=>/preview|play|listen|sample/i.test(H.opLabel(b)+' '+(b.getAttribute('title')||'')))||inner.find(b=>!H.tidy(b.innerText));
+      out.push({name:name,node:x,preview:preview||null,active:H.isActive(x),tag:'',description:'',locked:false});
     }
   }
   return out;};
+const voiceEntries=()=>{const rows=libraryRows();return rows.length?rows:menuRows();};
 const voiceButton=()=>{const b=H.buttons();const i=b.findIndex(x=>/^add speaker$/i.test(H.label(x)));return i>0?b[i-1]:null;};
 """
 
@@ -106,9 +133,16 @@ m[0].click();return JSON.stringify({ok:true});""")
 const b=voiceButton();if(!b)return JSON.stringify({ok:false,reason:'The speaker button was not found.'});
 b.click();return JSON.stringify({ok:true,voice:H.label(b)});""")
 
+    /** Opens Thaana AI's Settings panel, where the Voice Library is. */
+    val VOICE_OPEN_SETTINGS = FaseyhaSite.script("""$POPUP
+if(libraryRows().length)return JSON.stringify({ok:true});
+const m=H.buttons().filter(x=>/^open settings$/i.test(H.label(x)));
+if(m.length!==1)return JSON.stringify({ok:false,reason:'The Settings button was not found.'});
+m[0].click();return JSON.stringify({ok:true});""")
+
     /** Voices in the open speaker list, with whether each has a preview button. */
     val VOICE_LIST = FaseyhaSite.script("""$POPUP
-return JSON.stringify({voices:voiceEntries().map(v=>({name:v.name,preview:!!v.preview,active:v.active}))});""")
+return JSON.stringify({voices:voiceEntries().map(v=>({name:v.name,preview:!!v.preview,active:v.active,tag:v.tag,description:v.description,locked:v.locked}))});""")
 
     fun voicePreview(name: String) = FaseyhaSite.script("""$POPUP
 const v=voiceEntries().find(x=>x.name===wanted);
@@ -136,20 +170,21 @@ return JSON.stringify({ok:true,stopped:n});""")
     val POPUP_LIST = FaseyhaSite.script("""$POPUP
 return JSON.stringify({items:popupItems(),text:popupRoots().map(r=>H.tidy(r.innerText).slice(0,400))});""")
 
-    val CLOSE_POPUP = FaseyhaSite.script("""
+    val CLOSE_POPUP = FaseyhaSite.script("""$POPUP
 for(const t of [document.activeElement,document.body,document])
   t&&t.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',code:'Escape',keyCode:27,bubbles:true}));
+for(const r of panelRoots()){
+  const c=Array.from(r.querySelectorAll('button,[role="button"]')).filter(H.visible)
+    .find(x=>/^(close|close panel|close settings|×|✕|x)$/i.test(H.tidy(x.getAttribute('aria-label')||x.innerText||x.getAttribute('title')||'')));
+  if(c)c.click();
+}
 return JSON.stringify({ok:true});""")
-
-    val OPEN_SETTINGS = FaseyhaSite.script("""
-const m=H.buttons().filter(x=>/^open settings$/i.test(H.label(x)));
-if(m.length!==1)return JSON.stringify({ok:false});m[0].click();return JSON.stringify({ok:true});""")
 
     /** Controls inside the open dialog or popup, for building native settings. */
     val POPUP_REPORT = FaseyhaSite.script("""$POPUP
 const out=[];
-for(const r of popupRoots()){
-  out.push('Popup text: '+H.tidy(r.innerText).slice(0,500));
+for(const r of panelRoots()){
+  out.push('Panel text: '+H.tidy(r.innerText).slice(0,800));
   for(const x of r.querySelectorAll('input,select,textarea,button,[role="slider"],[role="switch"],[role="option"],[role="menuitem"],[role="radio"],[role="combobox"]')){
     const role=x.getAttribute('role')||x.tagName.toLowerCase()+(x.type?'/'+x.type:'');
     const owner=x.parentElement&&x.parentElement.closest('[role="option"],[role="menuitem"],[role="menuitemradio"],[role="radio"],li');
@@ -163,7 +198,7 @@ for(const r of popupRoots()){
       (H.isActive(x)?' [active]':'')+(x.disabled?' [disabled]':''));
   }
 }
-out.push('Voice entries: '+voiceEntries().map(v=>v.name+(v.preview?' (preview)':' (no preview)')+(v.active?' [active]':'')).join('; '));
+out.push('Voice entries: '+voiceEntries().map(v=>v.name+' '+v.tag+(v.preview?' (preview: '+(v.preview.tagName.toLowerCase())+')':' (no preview)')+(v.active?' [active]':'')+(v.locked?' [locked]':'')).join('; '));
 return JSON.stringify({lines:out.slice(0,140)});""")
 
     /** Copies the newest generated audio into the page's memory as base64, for the app to read. */
@@ -250,8 +285,8 @@ class ThaanaSpeechActivity : Activity() {
         more = screen.section()
         screen.button("Show website page", more) { screen.showWeb(page, "Thaana AI text to speech page") }
         screen.button("Copy page report", more) { copyPageReport() }
-        screen.button("Copy voice list report", more) { copyPopupReport(ThaanaSite.VOICE_OPEN, "voice list") }
-        screen.button("Copy settings report", more) { copyPopupReport(ThaanaSite.OPEN_SETTINGS, "settings") }
+        screen.button("Copy voice list report", more) { copyPopupReport(ThaanaSite.VOICE_OPEN_SETTINGS, "voice list") }
+        screen.button("Copy settings report", more) { copyPopupReport(ThaanaSite.VOICE_OPEN_SETTINGS, "settings") }
         screen.button("Reload page", more) { reloadPage() }
         screen.button("Open Thaana AI website and sign in", more) { openThaanaWebsite() }
         page = FaseyhaEngine(this, ThaanaSite.BASE) { onLoaded() }
@@ -314,20 +349,25 @@ class ThaanaSpeechActivity : Activity() {
     // ---------- voice ----------
 
     /** Opens Thaana AI's speaker list (if not already open) and runs [then] with its voices. */
-    private fun withVoiceList(then: (List<Triple<String, Boolean, Boolean>>) -> Unit) {
+    private data class Voice(val name: String, val preview: Boolean, val active: Boolean,
+                             val tag: String, val description: String, val locked: Boolean)
+
+    private fun withVoiceList(then: (List<Voice>) -> Unit) {
         fun read(attempt: Int) {
             page.eval(ThaanaSite.VOICE_LIST) { r ->
                 val a = r?.optJSONArray("voices")
                 val voices = (0 until (a?.length() ?: 0)).mapNotNull { i ->
-                    a!!.optJSONObject(i)?.let { Triple(it.optString("name"), it.optBoolean("preview"), it.optBoolean("active")) }
-                }.filter { it.first.isNotBlank() }
+                    a!!.optJSONObject(i)?.let { Voice(it.optString("name"), it.optBoolean("preview"), it.optBoolean("active"),
+                        it.optString("tag"), it.optString("description"), it.optBoolean("locked")) }
+                }.filter { it.name.isNotBlank() }
                 when {
                     voices.isNotEmpty() -> then(voices)
-                    attempt == 0 -> page.eval(ThaanaSite.VOICE_OPEN) { o ->
-                        if (o?.optBoolean("ok") != true) say(o?.optString("reason") ?: "The voice list could not be opened.")
-                        else page.after(800) { read(1) }
+                    // First the Settings panel (Voice Library), then the speaker button's menu.
+                    attempt == 0 -> page.eval(ThaanaSite.VOICE_OPEN_SETTINGS) { o ->
+                        page.after(if (o?.optBoolean("ok") == true) 1200 else 0) { read(1) }
                     }
-                    attempt < 4 -> page.after(500) { read(attempt + 1) }
+                    attempt == 3 -> page.eval(ThaanaSite.VOICE_OPEN) { page.after(900) { read(4) } }
+                    attempt < 6 -> page.after(600) { read(attempt + 1) }
                     else -> {
                         page.eval(ThaanaSite.CLOSE_POPUP) {}
                         say("The voice list could not be read. Use More options, Copy voice list report, and send it.")
@@ -347,9 +387,18 @@ class ThaanaSpeechActivity : Activity() {
         if (!pageReady || busy) { say(if (busy) "Please wait until speech is ready." else "The page is still loading."); return }
         say("Opening the voice list…")
         withVoiceList { voices ->
-            val labels = voices.map { (name, _, active) -> if (active || name == voice) "$name, current voice" else name }
+            val labels = voices.map { v ->
+                listOf(v.name, v.tag.takeIf { it.isNotBlank() && !v.locked },
+                    if (v.active || v.name.equals(voice, true)) "current voice" else null,
+                    if (v.locked) "locked" else null).filterNotNull().joinToString(", ") +
+                    (if (v.description.isNotBlank()) ": " + v.description else "")
+            }
             AlertDialog.Builder(this).setTitle("Voices")
-                .setItems(labels.toTypedArray()) { _, i -> voiceActions(voices[i].first, voices[i].second) }
+                .setItems(labels.toTypedArray()) { _, i ->
+                    val v = voices[i]
+                    if (v.locked) { say("${v.name} is locked on Thaana AI and cannot be chosen."); chooseVoice() }
+                    else voiceActions(v.name, v.preview)
+                }
                 .setNegativeButton("Close") { _, _ -> closeVoices() }
                 .setOnCancelListener { closeVoices() }
                 .show()
