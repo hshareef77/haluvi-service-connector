@@ -28,6 +28,23 @@ object ThaanaSite {
 const popupRoots=()=>H.all('[role="dialog"],[role="menu"],[role="listbox"],[data-radix-popper-content-wrapper],[aria-modal="true"]');
 const popupItems=()=>{const items=[];for(const r of popupRoots()){for(const x of r.querySelectorAll('[role="option"],[role="menuitem"],[role="menuitemradio"],[role="radio"],button,label')){
   if(!H.visible(x))continue;const l=H.opLabel(x);if(l&&l.length<=80&&!items.includes(l))items.push(l);}}return items;};
+const voiceEntries=()=>{const out=[],seen=new Set();
+  for(const r of popupRoots()){
+    let items=Array.from(r.querySelectorAll('[role="option"],[role="menuitem"],[role="menuitemradio"],[role="radio"],li'));
+    if(!items.length)items=Array.from(r.querySelectorAll('button,label'));
+    for(const x of items){
+      if(!H.visible(x))continue;
+      const name=H.tidy((x.innerText||x.getAttribute('aria-label')||'').split(/\n/)[0]).slice(0,60);
+      if(!name||seen.has(name)||/^(preview|play|pause|stop|listen|close|cancel)\b/i.test(name))continue;
+      seen.add(name);
+      const inner=Array.from(x.querySelectorAll('button,[role="button"]')).filter(b=>b!==x&&H.visible(b));
+      const preview=inner.find(b=>/preview|play|listen|sample/i.test(H.opLabel(b)+' '+(b.getAttribute('title')||'')))||
+        inner.find(b=>!H.tidy(b.innerText))||
+        H.buttons().find(b=>r.contains(b)&&new RegExp('(preview|play|listen).*'+name.replace(/[^A-Za-z0-9 ]/g,'.'),'i').test(H.opLabel(b)+' '+(b.getAttribute('title')||'')));
+      out.push({name:name,node:x,preview:preview||null,active:H.isActive(x)});
+    }
+  }
+  return out;};
 const voiceButton=()=>{const b=H.buttons();const i=b.findIndex(x=>/^add speaker$/i.test(H.label(x)));return i>0?b[i-1]:null;};
 """
 
@@ -89,13 +106,35 @@ m[0].click();return JSON.stringify({ok:true});""")
 const b=voiceButton();if(!b)return JSON.stringify({ok:false,reason:'The speaker button was not found.'});
 b.click();return JSON.stringify({ok:true,voice:H.label(b)});""")
 
+    /** Voices in the open speaker list, with whether each has a preview button. */
+    val VOICE_LIST = FaseyhaSite.script("""$POPUP
+return JSON.stringify({voices:voiceEntries().map(v=>({name:v.name,preview:!!v.preview,active:v.active}))});""")
+
+    fun voicePreview(name: String) = FaseyhaSite.script("""$POPUP
+const v=voiceEntries().find(x=>x.name===wanted);
+if(!v)return JSON.stringify({ok:false,reason:'closed'});
+if(!v.preview)return JSON.stringify({ok:false,reason:'Thaana AI shows no preview button for this voice.'});
+v.preview.click();return JSON.stringify({ok:true});""", "wanted" to name)
+
+    fun voiceChoose(name: String) = FaseyhaSite.script("""$POPUP
+const v=voiceEntries().find(x=>x.name===wanted);
+if(!v)return JSON.stringify({ok:false,reason:'closed'});
+v.node.click();return JSON.stringify({ok:true});""", "wanted" to name)
+
+    /** Remembers every audio the page plays (including previews), so the app can stop them. */
+    val TRACK_MEDIA = FaseyhaSite.script("""
+if(!window.__haluviTracked){window.__haluviTracked=true;window.__haluviMedia=[];
+  const play=HTMLMediaElement.prototype.play;
+  HTMLMediaElement.prototype.play=function(){if(!window.__haluviMedia.includes(this))window.__haluviMedia.push(this);return play.apply(this,arguments);};}
+return JSON.stringify({ok:true});""")
+
+    val STOP_MEDIA = FaseyhaSite.script("""
+const all=[...(window.__haluviMedia||[]),...document.querySelectorAll('audio,video')];
+let n=0;for(const m of all){try{if(!m.paused){m.pause();n++;}}catch(e){}}
+return JSON.stringify({ok:true,stopped:n});""")
+
     val POPUP_LIST = FaseyhaSite.script("""$POPUP
 return JSON.stringify({items:popupItems(),text:popupRoots().map(r=>H.tidy(r.innerText).slice(0,400))});""")
-
-    fun popupPick(label: String) = FaseyhaSite.script("""$POPUP
-for(const r of popupRoots()){for(const x of r.querySelectorAll('[role="option"],[role="menuitem"],[role="menuitemradio"],[role="radio"],button,label')){
-  if(H.visible(x)&&H.opLabel(x)===wanted){x.click();return JSON.stringify({ok:true});}}}
-return JSON.stringify({ok:false});""", "wanted" to label)
 
     val CLOSE_POPUP = FaseyhaSite.script("""
 for(const t of [document.activeElement,document.body,document])
@@ -113,7 +152,10 @@ for(const r of popupRoots()){
   out.push('Popup text: '+H.tidy(r.innerText).slice(0,500));
   for(const x of r.querySelectorAll('input,select,textarea,button,[role="slider"],[role="switch"],[role="option"],[role="menuitem"],[role="radio"],[role="combobox"]')){
     const role=x.getAttribute('role')||x.tagName.toLowerCase()+(x.type?'/'+x.type:'');
-    out.push(role+': '+(H.opLabel(x)||H.fieldLabel(x)).slice(0,80)+
+    const owner=x.parentElement&&x.parentElement.closest('[role="option"],[role="menuitem"],[role="menuitemradio"],[role="radio"],li');
+    const icon=x.getAttribute('aria-label')||x.getAttribute('title')||(x.querySelector('svg')?'(icon)':'');
+    out.push(role+': '+(H.opLabel(x)||H.fieldLabel(x)||icon).slice(0,80)+
+      (owner?' [in "'+H.tidy((owner.innerText||'').split(/\n/)[0]).slice(0,40)+'"]':'')+
       (x.getAttribute('aria-valuenow')!=null?' [value '+x.getAttribute('aria-valuenow')+' of '+x.getAttribute('aria-valuemin')+'-'+x.getAttribute('aria-valuemax')+']':'')+
       (x.type==='range'||x.type==='number'?' [min '+x.min+' max '+x.max+' step '+x.step+' value '+x.value+']':'')+
       (x.getAttribute('aria-checked')!=null?' [checked '+x.getAttribute('aria-checked')+']':'')+
@@ -121,7 +163,8 @@ for(const r of popupRoots()){
       (H.isActive(x)?' [active]':'')+(x.disabled?' [disabled]':''));
   }
 }
-return JSON.stringify({lines:out.slice(0,120)});""")
+out.push('Voice entries: '+voiceEntries().map(v=>v.name+(v.preview?' (preview)':' (no preview)')+(v.active?' [active]':'')).join('; '));
+return JSON.stringify({lines:out.slice(0,140)});""")
 
     /** Copies the newest generated audio into the page's memory as base64, for the app to read. */
     val AUDIO_START = FaseyhaSite.script("""
@@ -212,6 +255,8 @@ class ThaanaSpeechActivity : Activity() {
         screen.button("Reload page", more) { reloadPage() }
         screen.button("Open Thaana AI website and sign in", more) { openThaanaWebsite() }
         page = FaseyhaEngine(this, ThaanaSite.BASE) { onLoaded() }
+        // Voice previews start from the app's request, not a tap on the page itself.
+        page.web.settings.mediaPlaybackRequiresUserGesture = false
         screen.attach(page)
         setContentView(screen.root)
         page.open(ThaanaSite.SPEECH_PATH)
@@ -233,6 +278,7 @@ class ThaanaSpeechActivity : Activity() {
 
     // Single-page sites finish rendering after the load event: poll until the page is usable.
     private fun onLoaded(attempt: Int = 0) {
+        if (attempt == 0) page.eval(ThaanaSite.TRACK_MEDIA) {}
         page.after(if (attempt == 0) 1200 else 800) {
             page.eval(ThaanaSite.STATE) { r ->
                 when {
@@ -267,42 +313,98 @@ class ThaanaSpeechActivity : Activity() {
 
     // ---------- voice ----------
 
+    /** Opens Thaana AI's speaker list (if not already open) and runs [then] with its voices. */
+    private fun withVoiceList(then: (List<Triple<String, Boolean, Boolean>>) -> Unit) {
+        fun read(attempt: Int) {
+            page.eval(ThaanaSite.VOICE_LIST) { r ->
+                val a = r?.optJSONArray("voices")
+                val voices = (0 until (a?.length() ?: 0)).mapNotNull { i ->
+                    a!!.optJSONObject(i)?.let { Triple(it.optString("name"), it.optBoolean("preview"), it.optBoolean("active")) }
+                }.filter { it.first.isNotBlank() }
+                when {
+                    voices.isNotEmpty() -> then(voices)
+                    attempt == 0 -> page.eval(ThaanaSite.VOICE_OPEN) { o ->
+                        if (o?.optBoolean("ok") != true) say(o?.optString("reason") ?: "The voice list could not be opened.")
+                        else page.after(800) { read(1) }
+                    }
+                    attempt < 4 -> page.after(500) { read(attempt + 1) }
+                    else -> {
+                        page.eval(ThaanaSite.CLOSE_POPUP) {}
+                        say("The voice list could not be read. Use More options, Copy voice list report, and send it.")
+                    }
+                }
+            }
+        }
+        read(0)
+    }
+
+    private fun closeVoices() {
+        page.eval(ThaanaSite.STOP_MEDIA) {}
+        page.eval(ThaanaSite.CLOSE_POPUP) {}
+    }
+
     private fun chooseVoice() {
         if (!pageReady || busy) { say(if (busy) "Please wait until speech is ready." else "The page is still loading."); return }
         say("Opening the voice list…")
-        page.eval(ThaanaSite.VOICE_OPEN) { r ->
-            if (r?.optBoolean("ok") != true) { say(r?.optString("reason") ?: "The voice list could not be opened."); return@eval }
-            page.after(800) {
-                page.eval(ThaanaSite.POPUP_LIST) { list ->
-                    val items = list?.optJSONArray("items")
-                    val names = (0 until (items?.length() ?: 0)).map { items!!.optString(it) }.filter { it.isNotBlank() }
-                    if (names.isEmpty()) {
-                        page.eval(ThaanaSite.CLOSE_POPUP) {}
-                        say("The voice list could not be read. Use More options, Copy voice list report, and send it.")
-                        return@eval
-                    }
-                    AlertDialog.Builder(this).setTitle("Choose voice")
-                        .setItems(names.toTypedArray()) { _, i -> pickVoice(names[i]) }
-                        .setNegativeButton("Cancel") { _, _ -> page.eval(ThaanaSite.CLOSE_POPUP) {} }
-                        .setOnCancelListener { page.eval(ThaanaSite.CLOSE_POPUP) {} }
-                        .show()
-                    say("Choose a voice.")
-                }
-            }
+        withVoiceList { voices ->
+            val labels = voices.map { (name, _, active) -> if (active || name == voice) "$name, current voice" else name }
+            AlertDialog.Builder(this).setTitle("Voices")
+                .setItems(labels.toTypedArray()) { _, i -> voiceActions(voices[i].first, voices[i].second) }
+                .setNegativeButton("Close") { _, _ -> closeVoices() }
+                .setOnCancelListener { closeVoices() }
+                .show()
+            say("Choose a voice to preview or select.")
         }
     }
 
-    private fun pickVoice(name: String) {
-        page.eval(ThaanaSite.popupPick(name)) { r ->
-            if (r?.optBoolean("ok") != true) { page.eval(ThaanaSite.CLOSE_POPUP) {}; say("Thaana AI did not accept that voice."); return@eval }
-            page.after(700) {
-                page.eval(ThaanaSite.CLOSE_POPUP) {}
-                page.eval(ThaanaSite.STATE) { s ->
-                    updateVoice(s?.optString("voice").orEmpty())
-                    say("Voice: $voice.")
+    /** Preview or choose one voice; the list stays available for previewing others. */
+    private fun voiceActions(name: String, hasPreview: Boolean) {
+        AlertDialog.Builder(this).setTitle(name)
+            .setMessage(if (hasPreview) "Preview plays Thaana AI's sample of this voice." else "Thaana AI shows no preview for this voice.")
+            .apply { if (hasPreview) setNeutralButton("Preview") { _, _ -> previewVoice(name) } }
+            .setPositiveButton("Choose this voice") { _, _ -> chooseThisVoice(name) }
+            .setNegativeButton("Back to voices") { _, _ -> page.eval(ThaanaSite.STOP_MEDIA) {}; chooseVoice() }
+            .setOnCancelListener { closeVoices() }
+            .show()
+    }
+
+    private fun previewVoice(name: String) {
+        page.eval(ThaanaSite.STOP_MEDIA) {}
+        fun attempt(reopened: Boolean) {
+            page.eval(ThaanaSite.voicePreview(name)) { r ->
+                when {
+                    r?.optBoolean("ok") == true -> say("Playing the $name preview.")
+                    r?.optString("reason") == "closed" && !reopened -> withVoiceList { attempt(true) }
+                    else -> say(r?.optString("reason")?.takeIf { it != "closed" } ?: "The preview could not be played.")
+                }
+                // Keep the choice open: preview again, choose, or go back to the list.
+                AlertDialog.Builder(this).setTitle(name)
+                    .setNeutralButton("Preview again") { _, _ -> previewVoice(name) }
+                    .setPositiveButton("Choose this voice") { _, _ -> chooseThisVoice(name) }
+                    .setNegativeButton("Back to voices") { _, _ -> page.eval(ThaanaSite.STOP_MEDIA) {}; chooseVoice() }
+                    .setOnCancelListener { closeVoices() }
+                    .show()
+            }
+        }
+        attempt(false)
+    }
+
+    private fun chooseThisVoice(name: String) {
+        page.eval(ThaanaSite.STOP_MEDIA) {}
+        fun attempt(reopened: Boolean) {
+            page.eval(ThaanaSite.voiceChoose(name)) { r ->
+                if (r?.optString("reason") == "closed" && !reopened) { withVoiceList { attempt(true) }; return@eval }
+                if (r?.optBoolean("ok") != true) { closeVoices(); say("Thaana AI did not accept the $name voice."); return@eval }
+                page.after(700) {
+                    page.eval(ThaanaSite.CLOSE_POPUP) {}
+                    page.eval(ThaanaSite.STATE) { s ->
+                        updateVoice(s?.optString("voice").orEmpty())
+                        say(if (voice.equals(name, true)) "Voice: $voice." else "Selected $name; Thaana AI shows $voice as the speaker.")
+                    }
                 }
             }
         }
+        attempt(false)
     }
 
     // ---------- generate ----------

@@ -2,7 +2,7 @@
 
 ## v2.32 native Thaana AI text to speech
 
-Thaana AI, Text to speech is native: a text box, **Attach text file** (the site has no upload, so the app reads a text file into the box), **Voice: name. Change** (the site's speaker list shown as a native list), **Generate speech** with progress, then **Play/Pause**, **Stop** and **Save audio** (Android save dialog). The app types into Thaana AI's editor, presses Generate Speech, copies the generated audio into the app and plays it natively. More options has Show website page, page, voice list and settings reports, Reload and sign-in. Native settings follow once the settings report is known.
+Thaana AI, Text to speech is native. Playback controls appear only after speech is generated: a text box, **Attach text file** (the site has no upload, so the app reads a text file into the box), **Voice: name. Change** (the site's speakers as native buttons; each offers **Preview**, which plays Thaana AI's own sample, and **Choose this voice**; Back to voices stops a sample), **Generate speech** with progress, then **Play/Pause**, **Stop** and **Save audio** (Android save dialog). The app types into Thaana AI's editor, presses Generate Speech, copies the generated audio into the app and plays it natively. More options has Show website page, page, voice list and settings reports, Reload and sign-in. Native settings follow once the settings report is known.
 
 ## v2.31 service groups and Thaana AI (first step)
 
