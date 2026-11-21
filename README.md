@@ -1,5 +1,9 @@
 # Haluvi Service Connector
 
+## v2.35 voice list as its own screen
+
+Confirmed on the phone: saved audio plays offline. The voice list now replaces the text-to-speech screen while open: a "Choose a voice" heading, Back to text to speech, then one row per voice (tap to preview, tap again to stop; Choose beside it). The phone's Back button and choosing a voice return to the normal text-to-speech screen.
+
 ## v2.34 silent voice previews and reliable audio saving
 
 Confirmed on the phone with 2.33: generation, download, playback, speed, voice previews (one button to play and stop) and Choose work. Previews are now silent: no status or label changes are announced over the sample. Save audio finds the generated audio again if Android recreated the screen during the save dialog, writes it fully and reports the size; previously the saved file could be 0 bytes.

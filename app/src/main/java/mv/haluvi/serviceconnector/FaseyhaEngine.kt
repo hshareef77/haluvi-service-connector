@@ -186,6 +186,8 @@ class EngineScreen(private val activity: Activity, title: String) {
         panel.addView(this)
     }
 
+    fun scrollToTop() = scroll.post { scroll.scrollTo(0, 0) }
+
     fun dp(value: Int) = (value * activity.resources.displayMetrics.density).toInt()
 
     private fun themeBackground(): Int {

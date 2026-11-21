@@ -333,7 +333,10 @@ class ThaanaSpeechActivity : Activity() {
         if (signedOut) { signedOut = false; reloadPage() }
     }
 
-    private fun say(text: String) { status.text = text }
+    private fun say(text: String) {
+        status.text = text
+        if (voicePanel.visibility == View.VISIBLE) voiceStatus?.text = text
+    }
 
     private fun showUsage() {
         val count = input.text.trim().length
@@ -447,7 +450,17 @@ class ThaanaSpeechActivity : Activity() {
         voicePanel.removeAllViews()
         previewButtons.clear()
         previewing = null
-        screen.button("Close voices", voicePanel) { closeVoicePanel() }
+        // The voice list is its own screen: everything else is hidden until Back.
+        hiddenForVoices = (0 until screen.panel.childCount).map { screen.panel.getChildAt(it) }
+            .filter { it !== voicePanel && it.visibility == View.VISIBLE }
+        hiddenForVoices.forEach { it.visibility = View.GONE }
+        val heading = TextView(this).apply {
+            text = "Choose a voice"; textSize = 22f
+            if (android.os.Build.VERSION.SDK_INT >= 28) isAccessibilityHeading = true
+        }
+        voicePanel.addView(heading)
+        screen.button("Back to text to speech", voicePanel) { closeVoicePanel() }
+        voiceStatus = screen.text("Current voice: $voice. Tap a voice to hear it; tap again to stop. Choose sets the voice.", 16f, live = true, parent = voicePanel)
         for (v in voices) {
             val current = v.active || v.name.equals(voice, true)
             val info = listOfNotNull(v.name, v.tag.takeIf { it.isNotBlank() && !v.locked },
@@ -472,7 +485,8 @@ class ThaanaSpeechActivity : Activity() {
             voicePanel.addView(row)
         }
         voicePanel.visibility = View.VISIBLE
-        voiceButton.text = "Voice: $voice. Hide voice list"
+        screen.scrollToTop()
+        heading.sendAccessibilityEvent(android.view.accessibility.AccessibilityEvent.TYPE_VIEW_FOCUSED)
         say("${voices.size} voices listed below the voice button. Tap a voice to hear it, or Choose to use it.")
     }
 
@@ -483,10 +497,17 @@ class ThaanaSpeechActivity : Activity() {
     // Previews are silent: the button's label never changes, so TalkBack does not talk over the sample.
     private fun setPreviewing(name: String?) { previewing = name }
 
+    private var hiddenForVoices: List<View> = emptyList()
+    private var voiceStatus: TextView? = null
+
     private fun closeVoicePanel() {
         stopPreview()
         voicePanel.visibility = View.GONE
         voicePanel.removeAllViews()
+        voiceStatus = null
+        hiddenForVoices.forEach { it.visibility = View.VISIBLE }
+        hiddenForVoices = emptyList()
+        screen.scrollToTop()
         page.eval(ThaanaSite.CLOSE_POPUP) {}
         updateVoice("")
     }
@@ -551,9 +572,7 @@ class ThaanaSpeechActivity : Activity() {
                 if (r?.optBoolean("ok") != true) { say("Thaana AI did not accept the $name voice."); return@eval }
                 page.after(700) {
                     page.eval(ThaanaSite.STATE) { s ->
-                        voicePanel.visibility = View.GONE
-                        voicePanel.removeAllViews()
-                        page.eval(ThaanaSite.CLOSE_POPUP) {}
+                        closeVoicePanel()
                         updateVoice(s?.optString("voice").orEmpty())
                         say(if (voice.equals(name, true)) "Voice chosen: $voice." else "Selected $name; Thaana AI shows $voice as the speaker.")
                     }
@@ -888,7 +907,11 @@ class ThaanaSpeechActivity : Activity() {
 
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
-        if (screen.isWebShown) screen.showNative() else super.onBackPressed()
+        when {
+            screen.isWebShown -> screen.showNative()
+            ::voicePanel.isInitialized && voicePanel.visibility == View.VISIBLE -> closeVoicePanel()
+            else -> super.onBackPressed()
+        }
     }
 
     override fun onDestroy() {
