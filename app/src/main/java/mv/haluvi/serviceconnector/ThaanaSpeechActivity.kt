@@ -122,6 +122,9 @@ const audio=Array.from(document.querySelectorAll('audio')).map(x=>x.currentSrc||
 const lines=H.body().split(/\n/).map(H.tidy).filter(x=>x&&x.length<200);
 return JSON.stringify({signedOut:H.signedOut(),voice:voiceButton()?H.label(voiceButton()):'',
   generate:gen.length,generateEnabled:gen.filter(H.enabled).length,audio:audio,
+  percent:(()=>{const p=H.all('[role="progressbar"],progress')[0];
+    if(p){const v=p.getAttribute('aria-valuenow')||p.value;if(v!==null&&v!==undefined&&v!=='')return String(Math.round(Number(v)));}
+    const l=lines.find(x=>/^\d{1,3}\s?%$/.test(x));return l?l.replace(/\D/g,''):'';})(),
   busy:H.buttons().some(x=>/generating|cancel|stop/i.test(H.label(x)))||H.all('[aria-busy="true"],[role="progressbar"],progress').length>0,
   usage:[...new Set(lines.filter(x=>x.length<80&&(/\b(characters?|chars|credits?)\b/i.test(x)||/^[\d,]+\s*\/\s*[\d,]+$/.test(x))))].slice(0,4),
   messages:lines.filter(x=>/error|failed|insufficient|not enough|exceed|too long|try again/i.test(x)).slice(0,3)});""")
@@ -273,6 +276,10 @@ class ThaanaSpeechActivity : Activity() {
     private var audioFile: File? = null
     private var audioType = "audio/mpeg"
     private var media: MediaPlayer? = null
+    private lateinit var clearButton: Button
+    private lateinit var clearSlot: LinearLayout
+    private lateinit var saveButton: Button
+    private val audioPrefs by lazy { getSharedPreferences("thaana_speech", MODE_PRIVATE) }
     private lateinit var usageText: TextView
     private var siteUsage = ""
     private var syncToken = 0
@@ -292,6 +299,8 @@ class ThaanaSpeechActivity : Activity() {
         }
         screen.panel.addView(input)
         usageText = screen.text("0 characters", 15f)
+        clearSlot = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        screen.panel.addView(clearSlot)
         input.addTextChangedListener(object : android.text.TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
             override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
@@ -301,11 +310,15 @@ class ThaanaSpeechActivity : Activity() {
         voiceButton = screen.button("Voice: loading") { chooseVoice() }
         voicePanel = screen.section()
         generateButton = screen.button("Generate speech") { generate() }
-        player = screen.section()
-        playButton = screen.button("Play", player) { togglePlay() }
-        screen.button("Stop", player) { stopPlayback() }
-        speedButton = screen.button("Speed: 1.0x. Change", player) { chooseSpeed() }
-        screen.button("Save audio", player) { saveAudio() }
+        clearButton = screen.button("Clear text") { confirmClear() }
+        clearButton.visibility = View.GONE
+        // Player fixed at the bottom of the screen, shown once speech exists.
+        player = screen.footer
+        val transport = screen.buttonRow(player, "Rewind 10 s" to { seekBy(-10_000) }, "Play" to { togglePlay() }, "Forward 10 s" to { seekBy(10_000) })
+        playButton = transport[1]
+        val tools = screen.buttonRow(player, "Save audio" to { saveAudio() }, "Stop" to { stopPlayback() }, "Speed 1.0x" to { chooseSpeed() })
+        saveButton = tools[0]
+        speedButton = tools[2]
         lateinit var moreToggle: Button
         lateinit var more: LinearLayout
         moreToggle = screen.button("More options") {
@@ -319,6 +332,9 @@ class ThaanaSpeechActivity : Activity() {
         screen.button("Copy settings report", more) { copyPopupReport(ThaanaSite.VOICE_OPEN_SETTINGS, "settings") }
         screen.button("Reload page", more) { reloadPage() }
         screen.button("Open Thaana AI website and sign in", more) { openThaanaWebsite() }
+        (clearButton.parent as? android.view.ViewGroup)?.removeView(clearButton)
+        clearSlot.addView(clearButton)
+        restoreLastSpeech()
         page = FaseyhaEngine(this, ThaanaSite.BASE) { onLoaded() }
         // Voice previews start from the app's request, not a tap on the page itself.
         page.web.settings.mediaPlaybackRequiresUserGesture = false
@@ -340,6 +356,7 @@ class ThaanaSpeechActivity : Activity() {
 
     private fun showUsage() {
         val count = input.text.trim().length
+        if (::clearButton.isInitialized) clearButton.visibility = if (input.text.isNotEmpty()) View.VISIBLE else View.GONE
         usageText.text = "$count characters" + if (siteUsage.isNotBlank()) ". Thaana AI: $siteUsage" else ""
     }
 
@@ -353,6 +370,13 @@ class ThaanaSpeechActivity : Activity() {
                 page.after(700) { if (token == syncToken) readUsage() }
             }
         }, 1500)
+    }
+
+    private fun confirmClear() {
+        AlertDialog.Builder(this).setTitle("Clear all text?")
+            .setMessage("${input.text.trim().length} characters will be removed from the text box.")
+            .setPositiveButton("Clear") { _, _ -> input.text.clear(); input.requestFocus(); say("Text cleared.") }
+            .setNegativeButton("Cancel", null).show()
     }
 
     private fun readUsage() {
@@ -454,6 +478,7 @@ class ThaanaSpeechActivity : Activity() {
         hiddenForVoices = (0 until screen.panel.childCount).map { screen.panel.getChildAt(it) }
             .filter { it !== voicePanel && it.visibility == View.VISIBLE }
         hiddenForVoices.forEach { it.visibility = View.GONE }
+        player.visibility = View.GONE
         val heading = TextView(this).apply {
             text = "Choose a voice"; textSize = 22f
             if (android.os.Build.VERSION.SDK_INT >= 28) isAccessibilityHeading = true
@@ -507,6 +532,7 @@ class ThaanaSpeechActivity : Activity() {
         voiceStatus = null
         hiddenForVoices.forEach { it.visibility = View.VISIBLE }
         hiddenForVoices = emptyList()
+        if (media != null) player.visibility = View.VISIBLE
         screen.scrollToTop()
         page.eval(ThaanaSite.CLOSE_POPUP) {}
         updateVoice("")
@@ -592,6 +618,7 @@ class ThaanaSpeechActivity : Activity() {
         busy = true
         val token = ++run
         generateButton.isEnabled = false
+        generateButton.text = "Generating…"
         stopPlayback()
         say("Entering the text on Thaana AI…")
         page.eval(ThaanaSite.STATE) { before ->
@@ -623,7 +650,10 @@ class ThaanaSpeechActivity : Activity() {
                 messages.isNotEmpty() && attempt > 2 && s?.optBoolean("busy") != true -> fail("Thaana AI says: ${messages.first()}")
                 attempt >= 80 -> fail("Speech was not ready after two minutes. Use More options, Copy page report, and send it.")
                 else -> {
-                    if (attempt % 5 == 4) say("Generating speech… ${(attempt + 1) * 3 / 2} seconds.")
+                    val seconds = (attempt + 1) * 3 / 2
+                    val percent = s?.optString("percent").orEmpty()
+                    generateButton.text = if (percent.isNotBlank()) "Generating… $percent%" else "Generating… $seconds seconds"
+                    if (attempt % 5 == 4) say("Generating speech… " + if (percent.isNotBlank()) "$percent%." else "$seconds seconds.")
                     page.after(1500) { waitForAudio(token, oldAudio, attempt + 1) }
                 }
             }
@@ -647,6 +677,7 @@ class ThaanaSpeechActivity : Activity() {
         say("Downloading the speech…")
         val agent = page.web.settings.userAgentString
         val cookies = android.webkit.CookieManager.getInstance().getCookie(src)
+        val target = File(speechDir(), "incoming.tmp")
         Thread {
             var bytes: ByteArray? = null
             var type = ""
@@ -662,18 +693,23 @@ class ThaanaSpeechActivity : Activity() {
                     if (connection.responseCode !in 200..299) problem = "the server answered ${connection.responseCode}"
                     else {
                         type = connection.contentType.orEmpty()
-                        val data = connection.inputStream.use { input ->
-                            val out = java.io.ByteArrayOutputStream()
+                        val total = connection.contentLengthLong
+                        var done = 0L
+                        var shown = -1
+                        connection.inputStream.use { input -> target.outputStream().use { out ->
                             val buffer = ByteArray(64 * 1024)
                             while (true) {
                                 val n = input.read(buffer)
                                 if (n < 0) break
                                 out.write(buffer, 0, n)
-                                if (out.size() > 100 * 1024 * 1024) throw java.io.IOException("larger than 100 MB")
+                                done += n
+                                if (total > 0) {
+                                    val pct = (done * 100 / total).toInt()
+                                    if (pct / 10 != shown / 10) { shown = pct; runOnUiThread { if (token == run) generateButton.text = "Downloading… $pct%" } }
+                                }
                             }
-                            out.toByteArray()
-                        }
-                        bytes = data
+                        } }
+                        bytes = ByteArray(0) // marker: the data is in the file
                     }
                 } finally { connection.disconnect() }
             } catch (e: Exception) { problem = e.message ?: e.javaClass.simpleName }
@@ -683,7 +719,7 @@ class ThaanaSpeechActivity : Activity() {
                 if (data != null) {
                     if (type.startsWith("audio/") || type.startsWith("video/")) audioType = type.substringBefore(';')
                     else audioType = guessType(src)
-                    saveBytes(data)
+                    if (target.length() == 0L) fail("The downloaded audio was empty.") else useNewSpeech(target)
                 } else {
                     say("Download failed ($problem). Trying through the page…")
                     copyThroughPage(token)
@@ -749,34 +785,68 @@ class ThaanaSpeechActivity : Activity() {
         saveBytes(bytes)
     }
 
+    private fun speechDir() = File(filesDir, "speech").apply { mkdirs() }
+
     private fun saveBytes(bytes: ByteArray) {
+        if (bytes.isEmpty()) { fail("The generated audio was empty."); return }
         try {
-            if (bytes.isEmpty()) { fail("The generated audio was empty."); return }
-            cacheDir.listFiles { f -> f.name.startsWith("thaana-speech.") }?.forEach { it.delete() }
-            val file = File(cacheDir, "thaana-speech." + extension())
+            val file = File(speechDir(), "incoming.tmp")
             file.writeBytes(bytes)
-            audioFile = file
-            val prepared = MediaPlayer().apply {
-                setDataSource(file.absolutePath)
-                prepare()
-                setOnCompletionListener { playButton.text = "Play"; say("Playback finished.") }
-            }
-            media = prepared
-            busy = false
-            generateButton.isEnabled = true
-            player.visibility = View.VISIBLE
-            playButton.text = "Play"
-            applySpeed()
-            say("Speech ready, ${prepared.duration / 1000} seconds. Play or save it.")
-        } catch (e: Exception) {
-            fail("The audio could not be prepared for playback.")
+            useNewSpeech(file)
+        } catch (e: Exception) { fail("The audio could not be stored: ${e.message ?: "storage error"}.") }
+    }
+
+    /** Moves a finished download into the app's own storage (not the clearable cache) and prepares it. */
+    private fun useNewSpeech(incoming: File) {
+        media?.release(); media = null
+        speechDir().listFiles { f -> f.name.startsWith("last.") }?.forEach { it.delete() }
+        val file = File(speechDir(), "last." + extension())
+        if (!incoming.renameTo(file)) { incoming.copyTo(file, overwrite = true); incoming.delete() }
+        audioPrefs.edit().putString("path", file.absolutePath).putString("type", audioType).apply()
+        if (prepareSpeech(file)) say("Speech ready, ${(media?.duration ?: 0) / 1000} seconds. Play or save it.")
+        else fail("The audio could not be prepared for playback.")
+    }
+
+    private fun prepareSpeech(file: File): Boolean = try {
+        cacheDir.listFiles { f -> f.name.startsWith("thaana-speech.") }?.forEach { it.delete() }
+        val prepared = MediaPlayer().apply {
+            setDataSource(file.absolutePath)
+            prepare()
+            setOnCompletionListener { playButton.text = "Play"; say("Playback finished.") }
         }
+        media = prepared
+        audioFile = file
+        busy = false
+        generateButton.isEnabled = true
+        generateButton.text = "Regenerate speech"
+        player.visibility = View.VISIBLE
+        playButton.text = "Play"
+        saveButton.text = "Save audio"
+        applySpeed()
+        true
+    } catch (e: Exception) { false }
+
+    /** After Android closes and reopens this screen, the last speech is still playable and savable. */
+    private fun restoreLastSpeech() {
+        val path = audioPrefs.getString("path", null) ?: return
+        val file = File(path)
+        if (!file.exists() || file.length() == 0L) return
+        audioType = audioPrefs.getString("type", audioType) ?: audioType
+        if (prepareSpeech(file)) say("Your last generated speech is ready to play or save.")
+    }
+
+    private fun seekBy(ms: Int) {
+        val m = media ?: return
+        val target = (m.currentPosition + ms).coerceIn(0, m.duration)
+        m.seekTo(target)
+        say("${target / 1000} of ${m.duration / 1000} seconds.")
     }
 
     private fun fail(message: String) {
         busy = false
         run++
         generateButton.isEnabled = true
+        generateButton.text = if (media != null) "Regenerate speech" else "Generate speech"
         say(message)
     }
 
@@ -784,8 +854,8 @@ class ThaanaSpeechActivity : Activity() {
 
     private fun togglePlay() {
         val m = media ?: return
-        if (m.isPlaying) { m.pause(); playButton.text = "Play"; say("Paused.") }
-        else { m.start(); playButton.text = "Pause"; say("Playing.") }
+        if (m.isPlaying) { m.pause(); playButton.text = "Play" }
+        else { m.start(); playButton.text = "Pause" }
     }
 
     private fun chooseSpeed() {
@@ -798,7 +868,8 @@ class ThaanaSpeechActivity : Activity() {
     }
 
     private fun applySpeed() {
-        speedButton.text = "Speed: ${speed}x. Change"
+        speedButton.text = "Speed ${speed}x"
+        speedButton.contentDescription = "Playback speed ${speed}x. Change"
         val m = media ?: return
         try {
             val wasPlaying = m.isPlaying
@@ -813,7 +884,8 @@ class ThaanaSpeechActivity : Activity() {
     }
 
     private fun saveAudio() {
-        if (audioFile == null) return
+        val file = audioFile?.takeIf { it.exists() && it.length() > 0 }
+        if (file == null) { say("There is no generated speech to save yet."); return }
         val name = "thaana-speech-" + java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.ROOT).format(java.util.Date()) + "." + extension()
         startActivityForResult(Intent(Intent.ACTION_CREATE_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE)
             .setType(audioType).putExtra(Intent.EXTRA_TITLE, name), SAVE_AUDIO)
@@ -836,27 +908,58 @@ class ThaanaSpeechActivity : Activity() {
                     input.setText(text.take(MAX_TEXT))
                     say(if (text.length > MAX_TEXT) "Attached the first $MAX_TEXT characters of the file." else "Text attached: ${text.length} characters.")
                 }
-                SAVE_AUDIO -> {
-                    // Android may recreate this screen while its save dialog is open; find the audio again.
-                    val file = audioFile?.takeIf { it.exists() && it.length() > 0 }
-                        ?: cacheDir.listFiles { f -> f.name.startsWith("thaana-speech.") && f.length() > 0 }?.maxByOrNull { it.lastModified() }
-                    if (file == null) {
-                        try { android.provider.DocumentsContract.deleteDocument(contentResolver, uri) } catch (_: Exception) {}
-                        say("The generated audio is no longer available. Generate it again, then save.")
-                        return
-                    }
-                    var written = 0L
-                    contentResolver.openOutputStream(uri, "wt")?.use { out ->
-                        file.inputStream().use { written = it.copyTo(out) }
-                        out.flush()
-                    }
-                    say(if (written > 0) "Audio saved, " + android.text.format.Formatter.formatShortFileSize(this, written) + "."
-                        else "The audio could not be written to that location.")
-                }
+                SAVE_AUDIO -> writeAudio(uri)
             }
         } catch (e: Exception) {
             say(if (requestCode == PICK_TEXT) "The file could not be read as text." else "The audio could not be saved.")
         }
+    }
+
+    /** Copies the speech to the chosen file in the background, showing progress on the Save button. */
+    private fun writeAudio(uri: android.net.Uri) {
+        val file = audioFile?.takeIf { it.exists() && it.length() > 0 }
+            ?: audioPrefs.getString("path", null)?.let { File(it) }?.takeIf { it.exists() && it.length() > 0 }
+        if (file == null) {
+            try { android.provider.DocumentsContract.deleteDocument(contentResolver, uri) } catch (_: Exception) {}
+            say("The generated audio is missing on this phone. Generate it again, then save.")
+            return
+        }
+        saveButton.isEnabled = false
+        saveButton.text = "Saving… 0%"
+        say("Saving the audio…")
+        Thread {
+            var problem = ""
+            var written = 0L
+            try {
+                val total = file.length()
+                contentResolver.openOutputStream(uri, "wt")?.use { out ->
+                    file.inputStream().use { input ->
+                        val buffer = ByteArray(256 * 1024)
+                        var shown = -1
+                        while (true) {
+                            val n = input.read(buffer)
+                            if (n < 0) break
+                            out.write(buffer, 0, n)
+                            written += n
+                            val pct = (written * 100 / total).toInt()
+                            if (pct / 5 != shown / 5) { shown = pct; runOnUiThread { saveButton.text = "Saving… $pct%" } }
+                        }
+                    }
+                    out.flush()
+                } ?: run { problem = "the location could not be opened" }
+            } catch (e: Exception) { problem = e.message ?: e.javaClass.simpleName }
+            runOnUiThread {
+                saveButton.isEnabled = true
+                if (problem.isEmpty() && written == file.length()) {
+                    saveButton.text = "Saved. Save again"
+                    say("Audio saved, " + android.text.format.Formatter.formatShortFileSize(this, written) + ".")
+                } else {
+                    saveButton.text = "Save audio"
+                    try { android.provider.DocumentsContract.deleteDocument(contentResolver, uri) } catch (_: Exception) {}
+                    say("Saving failed: " + problem.ifEmpty { "only part of the audio was written" } + ". Try Save audio again.")
+                }
+            }
+        }.start()
     }
 
     // ---------- reports ----------

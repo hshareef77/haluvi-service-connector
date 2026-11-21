@@ -1,5 +1,13 @@
 # Haluvi Service Connector
 
+## v2.36 bottom player, clear text, progress and reliable saving
+
+- Generated speech is kept in the app's own storage instead of Android's clearable cache, and is restored if Android recreates the screen. "The generated audio is no longer available" no longer happens for long recordings.
+- Player fixed at the bottom of the screen: Rewind 10 s, Play/Pause, Forward 10 s; then Save audio, Stop, Speed.
+- Save shows "Saving… n%", then "Saved. Save again"; any failure is reported with its reason and the empty file is removed.
+- Clear text appears under the counter only when there is text, and asks before clearing.
+- Generate shows "Generating… n seconds" (or Thaana AI's percentage), "Downloading… n%", then "Regenerate speech". Downloads stream straight to storage, so very long speech is not limited by memory.
+
 ## v2.35 voice list as its own screen
 
 Confirmed on the phone: saved audio plays offline. The voice list now replaces the text-to-speech screen while open: a "Choose a voice" heading, Back to text to speech, then one row per voice (tap to preview, tap again to stop; Choose beside it). The phone's Back button and choosing a voice return to the normal text-to-speech screen.

@@ -116,10 +116,30 @@ class EngineScreen(private val activity: Activity, title: String) {
         private set
     var onNativeShown: (() -> Unit)? = null
 
+    /** Controls fixed at the bottom of the screen, outside the scrolling content (hidden until used). */
+    val footer = LinearLayout(activity).apply {
+        orientation = LinearLayout.VERTICAL
+        visibility = View.GONE
+        setBackgroundColor(themeBackground())
+        setPadding(dp(8), dp(4), dp(8), dp(4))
+    }
+
     val root = LinearLayout(activity).apply {
         orientation = LinearLayout.VERTICAL
         addView(webBar, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         addView(stack, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+        addView(footer, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+    }
+
+    /** A row of equal-width buttons in [parent]. */
+    fun buttonRow(parent: LinearLayout, vararg items: Pair<String, () -> Unit>): List<Button> {
+        val row = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL }
+        val buttons = items.map { (label, work) ->
+            Button(activity).apply { text = label; minHeight = dp(56); setOnClickListener { work() } }
+                .also { row.addView(it, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)) }
+        }
+        parent.addView(row)
+        return buttons
     }
 
     init {
