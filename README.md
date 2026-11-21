@@ -1,5 +1,9 @@
 # Haluvi Service Connector
 
+## v2.39 parts confirmed by Thaana AI's own counter
+
+A 12,757-character generation timed out because Thaana AI still held the full text: replacing a full editor did not update the site's own copy. Each part is now entered by clearing the editor first, typing the part, and confirming with Thaana AI's character counter before Generate; a mismatch is retried once, then stops at once. Text longer than one part is no longer sent to Thaana AI while typing; the counter shows the number of parts instead.
+
 ## v2.38 reliable long-text parts and History tab
 
 - Each part now replaces the whole Thaana AI editor (previously the editor could still hold the full 12,751-character text) and its length is verified before generating.

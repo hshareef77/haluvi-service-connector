@@ -118,6 +118,20 @@ const same=got===want||(got.startsWith(want.slice(0,40))&&Math.abs(got.length-wa
 return JSON.stringify({ok:same,got:got.length,want:want.length,editors:eds.length,
   reason:same?'':'Thaana AI\'s text box holds '+got.length+' characters instead of '+want.length+'.'});""", "value" to text)
 
+    /** Empties Thaana AI's editor the way a person would (select all, delete). */
+    val CLEAR_TEXT = FaseyhaSite.script("""
+const eds=H.all('[contenteditable="true"],textarea').filter(x=>!x.closest('[role="dialog"]'));
+if(!eds.length)return JSON.stringify({ok:false,reason:'Thaana AI did not show its text box.'});
+const ed=eds[0];ed.focus();
+if(ed.tagName==='TEXTAREA'){Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(ed,'');ed.dispatchEvent(new Event('input',{bubbles:true}));}
+else{document.execCommand('selectAll',false,null);document.execCommand('delete',false,null);}
+return JSON.stringify({ok:true,left:H.tidy(ed.innerText||ed.value||'').length});""")
+
+    /** Thaana AI's own count of the characters it holds ("8,986 / 20,000"), or -1. */
+    val SITE_COUNT = FaseyhaSite.script("""
+const l=H.body().split(/\n/).map(H.tidy).find(x=>/^[\d,]+\s*\/\s*[\d,]+(\s*characters?)?$/i.test(x));
+return JSON.stringify({count:l?Number(l.split('/')[0].replace(/[^0-9]/g,'')):-1});""")
+
     /** Current speaker, Generate state, audio players and messages. */
     val STATE = FaseyhaSite.script("""$POPUP
 const gen=H.buttons().filter(x=>/^generate speech$/i.test(H.label(x)));
@@ -381,13 +395,16 @@ class ThaanaSpeechActivity : Activity() {
     private fun showUsage() {
         val count = input.text.trim().length
         if (::clearButton.isInitialized) clearButton.visibility = if (input.text.isNotEmpty()) View.VISIBLE else View.GONE
-        usageText.text = "$count characters" + if (siteUsage.isNotBlank()) ". Thaana AI: $siteUsage" else ""
+        usageText.text = if (count > SpeechParts.MAX_PART)
+            "$count characters, will be generated in ${SpeechParts.split(input.text.toString()).size} parts of up to ${SpeechParts.MAX_PART}."
+        else "$count characters" + if (siteUsage.isNotBlank()) ". Thaana AI: $siteUsage" else ""
     }
 
     /** Counts locally at once; after typing pauses, gives the text to Thaana AI and reads its counter. */
     private fun textChanged() {
         showUsage()
         val token = ++syncToken
+        if (input.text.trim().length > SpeechParts.MAX_PART) return // long text goes to Thaana AI part by part
         usageText.postDelayed({
             if (token != syncToken || !pageReady || busy) return@postDelayed
             page.eval(ThaanaSite.setText(input.text.toString().trim())) {
@@ -669,10 +686,38 @@ class ThaanaSpeechActivity : Activity() {
         page.eval(ThaanaSite.STATE) { before ->
             val oldAudio = before?.optJSONArray("audio")?.let { a -> (0 until a.length()).map { a.optString(it) }.toSet() } ?: emptySet()
             oldMessages = before?.optJSONArray("messages")?.let { a -> (0 until a.length()).map { a.optString(it) }.toSet() } ?: emptySet()
-            page.eval(ThaanaSite.setText(parts[partIndex])) { r ->
-                if (token != run) return@eval
-                if (r?.optBoolean("ok") != true) { fail(r?.optString("reason")?.ifBlank { null } ?: "The text could not be entered on Thaana AI."); return@eval }
-                page.after(700) { pressGenerate(token, oldAudio, 0) }
+            enterPart(token, 0) { pressGenerate(token, oldAudio, 0) }
+        }
+    }
+
+    /**
+     * Thaana AI keeps its own copy of the editor text. Replacing a full editor can leave
+     * that copy unchanged, so clear it first, type the part, and confirm with the
+     * site's own character counter before generating.
+     */
+    private fun enterPart(token: Int, attempt: Int, then: () -> Unit) {
+        val part = parts[partIndex]
+        page.eval(ThaanaSite.CLEAR_TEXT) { c ->
+            if (token != run) return@eval
+            if (c?.optBoolean("ok") != true) { fail(c?.optString("reason")?.ifBlank { null } ?: "Thaana AI's text box could not be cleared."); return@eval }
+            page.after(600) {
+                page.eval(ThaanaSite.setText(part)) { r ->
+                    if (token != run) return@eval
+                    page.after(900) {
+                        page.eval(ThaanaSite.SITE_COUNT) { n ->
+                            if (token != run) return@eval
+                            val count = n?.optInt("count", -1) ?: -1
+                            val expected = part.replace(Regex("\\s+"), " ").trim().length
+                            val slack = maxOf(20, part.length * 3 / 100)
+                            val close = count < 0 || kotlin.math.abs(count - expected) <= slack || kotlin.math.abs(count - part.length) <= slack
+                            when {
+                                r?.optBoolean("ok") == true && close -> then()
+                                attempt == 0 -> enterPart(token, 1, then)
+                                else -> fail("Thaana AI holds ${if (count >= 0) count else r?.optInt("got") ?: 0} characters instead of this part's ${part.length}. Nothing was generated.")
+                            }
+                        }
+                    }
+                }
             }
         }
     }
