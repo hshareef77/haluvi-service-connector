@@ -148,7 +148,15 @@ return JSON.stringify({voices:voiceEntries().map(v=>({name:v.name,preview:!!v.pr
 const v=voiceEntries().find(x=>x.name===wanted);
 if(!v)return JSON.stringify({ok:false,reason:'closed'});
 if(!v.preview)return JSON.stringify({ok:false,reason:'Thaana AI shows no preview button for this voice.'});
-v.preview.click();return JSON.stringify({ok:true});""", "wanted" to name)
+const before=(window.__haluviMedia||[]).length;
+v.preview.click();return JSON.stringify({ok:true,before:before});""", "wanted" to name)
+
+    /** Address of a sample the page started after [before] media were known. */
+    fun previewSource(before: Int) = FaseyhaSite.script("""
+const m=(window.__haluviMedia||[]).slice(Number(n));
+const fresh=m.map(x=>x.currentSrc||x.src).filter(Boolean);
+const any=Array.from(document.querySelectorAll('audio')).map(x=>x.currentSrc||x.src).filter(Boolean);
+return JSON.stringify({src:fresh[fresh.length-1]||'',count:fresh.length,pageAudio:any.length});""", "n" to before)
 
     fun voiceChoose(name: String) = FaseyhaSite.script("""$POPUP
 const v=voiceEntries().find(x=>x.name===wanted);
@@ -263,6 +271,8 @@ class ThaanaSpeechActivity : Activity() {
     private var audioFile: File? = null
     private var audioType = "audio/mpeg"
     private var media: MediaPlayer? = null
+    private var previewPlayer: MediaPlayer? = null
+    private lateinit var voicePanel: LinearLayout
     private lateinit var speedButton: Button
     private var speed = 1.0f
 
@@ -278,6 +288,7 @@ class ThaanaSpeechActivity : Activity() {
         screen.panel.addView(input)
         screen.button("Attach text file") { pickTextFile() }
         voiceButton = screen.button("Voice: loading") { chooseVoice() }
+        voicePanel = screen.section()
         generateButton = screen.button("Generate speech") { generate() }
         player = screen.section()
         playButton = screen.button("Play", player) { togglePlay() }
@@ -386,77 +397,114 @@ class ThaanaSpeechActivity : Activity() {
         read(0)
     }
 
-    private fun closeVoices() {
-        page.eval(ThaanaSite.STOP_MEDIA) {}
-        page.eval(ThaanaSite.CLOSE_POPUP) {}
-    }
 
+    /** Lists every voice as a row: the voice button plays its preview, Choose selects it. */
     private fun chooseVoice() {
+        if (voicePanel.visibility == View.VISIBLE) { closeVoicePanel(); return }
         if (!pageReady || busy) { say(if (busy) "Please wait until speech is ready." else "The page is still loading."); return }
         say("Opening the voice list…")
-        withVoiceList { voices ->
-            val labels = voices.map { v ->
-                listOf(v.name, v.tag.takeIf { it.isNotBlank() && !v.locked },
-                    if (v.active || v.name.equals(voice, true)) "current voice" else null,
-                    if (v.locked) "locked" else null).filterNotNull().joinToString(", ") +
-                    (if (v.description.isNotBlank()) ": " + v.description else "")
-            }
-            AlertDialog.Builder(this).setTitle("Voices")
-                .setItems(labels.toTypedArray()) { _, i ->
-                    val v = voices[i]
-                    if (v.locked) { say("${v.name} is locked on Thaana AI and cannot be chosen."); chooseVoice() }
-                    else voiceActions(v.name, v.preview)
-                }
-                .setNegativeButton("Close") { _, _ -> closeVoices() }
-                .setOnCancelListener { closeVoices() }
-                .show()
-            say("Choose a voice to preview or select.")
+        withVoiceList { voices -> showVoicePanel(voices) }
+    }
+
+    private fun showVoicePanel(voices: List<Voice>) {
+        voicePanel.removeAllViews()
+        screen.button("Stop preview", voicePanel) { stopPreview(); say("Preview stopped.") }
+        screen.button("Close voices", voicePanel) { closeVoicePanel() }
+        for (v in voices) {
+            val current = v.active || v.name.equals(voice, true)
+            val info = listOfNotNull(v.name, v.tag.takeIf { it.isNotBlank() && !v.locked },
+                if (current) "current voice" else null, if (v.locked) "locked" else null).joinToString(", ") +
+                (if (v.description.isNotBlank()) ": " + v.description else "")
+            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            row.addView(Button(this).apply {
+                text = info; isAllCaps = false; minHeight = screen.dp(56); gravity = Gravity.START or Gravity.CENTER_VERTICAL
+                contentDescription = "Preview $info"
+                setOnClickListener { previewVoice(v.name, v.preview) }
+            }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+            row.addView(Button(this).apply {
+                text = if (current) "Chosen" else "Choose"; minHeight = screen.dp(56)
+                contentDescription = if (current) "${v.name} is the current voice" else "Choose ${v.name}"
+                isEnabled = !v.locked && !current
+                setOnClickListener { chooseThisVoice(v.name) }
+            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+            voicePanel.addView(row)
         }
+        voicePanel.visibility = View.VISIBLE
+        voiceButton.text = "Voice: $voice. Hide voice list"
+        say("${voices.size} voices listed below the voice button. Tap a voice to hear it, or Choose to use it.")
     }
 
-    /** Preview or choose one voice; the list stays available for previewing others. */
-    private fun voiceActions(name: String, hasPreview: Boolean) {
-        AlertDialog.Builder(this).setTitle(name)
-            .setMessage(if (hasPreview) "Preview plays Thaana AI's sample of this voice." else "Thaana AI shows no preview for this voice.")
-            .apply { if (hasPreview) setNeutralButton("Preview") { _, _ -> previewVoice(name) } }
-            .setPositiveButton("Choose this voice") { _, _ -> chooseThisVoice(name) }
-            .setNegativeButton("Back to voices") { _, _ -> page.eval(ThaanaSite.STOP_MEDIA) {}; chooseVoice() }
-            .setOnCancelListener { closeVoices() }
-            .show()
+    private fun closeVoicePanel() {
+        stopPreview()
+        voicePanel.visibility = View.GONE
+        voicePanel.removeAllViews()
+        page.eval(ThaanaSite.CLOSE_POPUP) {}
+        updateVoice("")
     }
 
-    private fun previewVoice(name: String) {
+    private fun stopPreview() {
+        previewPlayer?.release()
+        previewPlayer = null
         page.eval(ThaanaSite.STOP_MEDIA) {}
+    }
+
+    /** Presses Thaana AI's preview, then plays that sample with Android's own player. */
+    private fun previewVoice(name: String, hasPreview: Boolean) {
+        if (!hasPreview) { say("Thaana AI has no preview for $name."); return }
+        stopPreview()
+        say("Loading the $name preview…")
         fun attempt(reopened: Boolean) {
             page.eval(ThaanaSite.voicePreview(name)) { r ->
-                when {
-                    r?.optBoolean("ok") == true -> say("Playing the $name preview.")
-                    r?.optString("reason") == "closed" && !reopened -> withVoiceList { attempt(true) }
-                    else -> say(r?.optString("reason")?.takeIf { it != "closed" } ?: "The preview could not be played.")
+                if (r?.optString("reason") == "closed" && !reopened) { withVoiceList { attempt(true) }; return@eval }
+                if (r?.optBoolean("ok") != true) { say(r?.optString("reason")?.ifBlank { null } ?: "The preview could not be started."); return@eval }
+                val before = r.optInt("before")
+                fun find(n: Int) {
+                    page.after(500) {
+                        page.eval(ThaanaSite.previewSource(before)) { p ->
+                            val src = p?.optString("src").orEmpty()
+                            when {
+                                src.startsWith("https://") -> { page.eval(ThaanaSite.STOP_MEDIA) {}; playPreview(name, src) }
+                                src.isNotBlank() -> say("Playing the $name preview.")
+                                n < 10 -> find(n + 1)
+                                else -> say("The $name preview did not start. Use More options, Copy voice list report.")
+                            }
+                        }
+                    }
                 }
-                // Keep the choice open: preview again, choose, or go back to the list.
-                AlertDialog.Builder(this).setTitle(name)
-                    .setNeutralButton("Preview again") { _, _ -> previewVoice(name) }
-                    .setPositiveButton("Choose this voice") { _, _ -> chooseThisVoice(name) }
-                    .setNegativeButton("Back to voices") { _, _ -> page.eval(ThaanaSite.STOP_MEDIA) {}; chooseVoice() }
-                    .setOnCancelListener { closeVoices() }
-                    .show()
+                find(0)
             }
         }
         attempt(false)
     }
 
+    private fun playPreview(name: String, src: String) {
+        val headers = mutableMapOf("User-Agent" to page.web.settings.userAgentString,
+            "Referer" to ThaanaSite.BASE + ThaanaSite.SPEECH_PATH)
+        android.webkit.CookieManager.getInstance().getCookie(src)?.let { headers["Cookie"] = it }
+        try {
+            previewPlayer = MediaPlayer().apply {
+                setDataSource(this@ThaanaSpeechActivity, android.net.Uri.parse(src), headers)
+                setOnPreparedListener { it.start(); say("Playing the $name preview.") }
+                setOnCompletionListener { say("$name preview finished.") }
+                setOnErrorListener { _, _, _ -> say("The $name preview could not be played."); true }
+                prepareAsync()
+            }
+        } catch (e: Exception) { say("The $name preview could not be played.") }
+    }
+
     private fun chooseThisVoice(name: String) {
-        page.eval(ThaanaSite.STOP_MEDIA) {}
+        stopPreview()
         fun attempt(reopened: Boolean) {
             page.eval(ThaanaSite.voiceChoose(name)) { r ->
                 if (r?.optString("reason") == "closed" && !reopened) { withVoiceList { attempt(true) }; return@eval }
-                if (r?.optBoolean("ok") != true) { closeVoices(); say("Thaana AI did not accept the $name voice."); return@eval }
+                if (r?.optBoolean("ok") != true) { say("Thaana AI did not accept the $name voice."); return@eval }
                 page.after(700) {
-                    page.eval(ThaanaSite.CLOSE_POPUP) {}
                     page.eval(ThaanaSite.STATE) { s ->
+                        voicePanel.visibility = View.GONE
+                        voicePanel.removeAllViews()
+                        page.eval(ThaanaSite.CLOSE_POPUP) {}
                         updateVoice(s?.optString("voice").orEmpty())
-                        say(if (voice.equals(name, true)) "Voice: $voice." else "Selected $name; Thaana AI shows $voice as the speaker.")
+                        say(if (voice.equals(name, true)) "Voice chosen: $voice." else "Selected $name; Thaana AI shows $voice as the speaker.")
                     }
                 }
             }
@@ -781,6 +829,7 @@ class ThaanaSpeechActivity : Activity() {
     }
 
     override fun onDestroy() {
+        previewPlayer?.release()
         media?.release()
         media = null
         if (::page.isInitialized) page.destroy()

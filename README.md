@@ -2,7 +2,7 @@
 
 ## v2.33 Thaana AI audio download and playback speed
 
-Confirmed on the phone with 2.32: text entry, Voice Library (54 voices with descriptions and preview buttons) and generation work. Copying the result failed because Thaana AI serves audio from a separate server that the page script may not read. The app now downloads that address itself (with the signed-in session), falling back to the page copy for in-page audio. The native player adds **Speed** (0.75x to 2x). The Settings panel contains only the Voice Library, so voice choice is the native setting.
+Confirmed on the phone with 2.32: text entry, Voice Library (54 voices with descriptions and preview buttons) and generation work. Copying the result failed because Thaana AI serves audio from a separate server that the page script may not read. The app now downloads that address itself (with the signed-in session), falling back to the page copy for in-page audio. The native player adds **Speed** (0.75x to 2x). **Voice** now lists every voice as a row: the voice button (name, male/female, description) plays its preview with Android's own player, and **Choose** next to it selects the voice; Stop preview and Close voices are at the top. The Settings panel contains only the Voice Library, so voice choice is the native setting.
 
 ## v2.32 native Thaana AI text to speech
 
