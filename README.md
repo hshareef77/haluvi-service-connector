@@ -1,5 +1,9 @@
 # Haluvi Service Connector
 
+## v2.40 Regenerate Speech and resumable parts
+
+Confirmed on the phone with 2.39: part 1 of a 12,925-character text generated (8 minutes 20 seconds) and part 2 was entered correctly. After a generation Thaana AI renames its button to "Regenerate Speech", which the app did not recognise, so it stopped and kept part 1. Both names are now accepted. Finished parts and the resume point are remembered across app restarts and updates; parts left by an earlier version are offered as "Continue from part N" (or Start over).
+
 ## v2.39 parts confirmed by Thaana AI's own counter
 
 A 12,757-character generation timed out because Thaana AI still held the full text: replacing a full editor did not update the site's own copy. Each part is now entered by clearing the editor first, typing the part, and confirming with Thaana AI's character counter before Generate; a mismatch is retried once, then stops at once. Text longer than one part is no longer sent to Thaana AI while typing; the counter shows the number of parts instead.

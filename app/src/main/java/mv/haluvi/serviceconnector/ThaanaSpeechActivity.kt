@@ -134,7 +134,7 @@ return JSON.stringify({count:l?Number(l.split('/')[0].replace(/[^0-9]/g,'')):-1}
 
     /** Current speaker, Generate state, audio players and messages. */
     val STATE = FaseyhaSite.script("""$POPUP
-const gen=H.buttons().filter(x=>/^generate speech$/i.test(H.label(x)));
+const gen=H.buttons().filter(x=>/^(re)?generate speech$/i.test(H.label(x)));
 const audio=Array.from(document.querySelectorAll('audio')).map(x=>x.currentSrc||x.src).filter(Boolean);
 const lines=H.body().split(/\n/).map(H.tidy).filter(x=>x&&x.length<200);
 return JSON.stringify({signedOut:H.signedOut(),voice:voiceButton()?H.label(voiceButton()):'',
@@ -147,7 +147,7 @@ return JSON.stringify({signedOut:H.signedOut(),voice:voiceButton()?H.label(voice
   messages:lines.filter(x=>/error|failed|insufficient|not enough|exceed|too long|try again/i.test(x)).slice(0,3)});""")
 
     val GENERATE = FaseyhaSite.script("""
-const m=H.buttons().filter(x=>/^generate speech$/i.test(H.label(x))&&H.enabled(x));
+const m=H.buttons().filter(x=>/^(re)?generate speech$/i.test(H.label(x))&&H.enabled(x));
 if(m.length!==1)return JSON.stringify({ok:false,reason:m.length?'More than one Generate button.':'Generate Speech is not enabled yet.'});
 m[0].click();return JSON.stringify({ok:true});""")
 
@@ -662,9 +662,32 @@ class ThaanaSpeechActivity : Activity() {
         if (!pageReady) { say("The page is still loading. Try again in a moment."); return }
         val text = input.text.toString().trim()
         if (text.isEmpty()) { input.error = "Type or attach the text to speak"; input.requestFocus(); return }
+        if (parts.isEmpty() && audioPrefs.getString("resumeText", null) == null && partFile(0).length() > 0) {
+            // Finished parts left from an earlier attempt without a saved resume point: let the person decide.
+            val split = SpeechParts.split(text)
+            val kept = (0 until split.size).takeWhile { partFile(it).length() > 0 }.count()
+            if (kept in 1 until split.size) {
+                AlertDialog.Builder(this).setTitle("Continue from part ${kept + 1}?")
+                    .setMessage((if (kept == 1) "Part 1" else "Parts 1 to $kept") + " of ${split.size} from your last attempt are kept. " +
+                        "Continue only if the text has not changed since then; otherwise start over.")
+                    .setPositiveButton("Continue") { _, _ -> parts = split; partsText = text; partIndex = kept; generate() }
+                    .setNegativeButton("Start over") { _, _ -> clearPartFiles(); generate() }
+                    .show()
+                return
+            }
+            clearPartFiles()
+        }
+        if (parts.isEmpty() && audioPrefs.getString("resumeText", null) == text) {
+            // Finished parts from before the app was closed or updated.
+            val saved = try { org.json.JSONArray(audioPrefs.getString("resumeParts", "[]")) } catch (_: Exception) { org.json.JSONArray() }
+            parts = (0 until saved.length()).map { saved.optString(it) }
+            partsText = text
+            partIndex = audioPrefs.getInt("resumeIndex", 0)
+        }
         val resume = parts.size > 1 && partsText == text && partIndex in 1 until parts.size &&
             (0 until partIndex).all { partFile(it).length() > 0 }
         if (!resume) {
+            audioPrefs.edit().remove("resumeText").remove("resumeIndex").remove("resumeParts").apply()
             clearPartFiles()
             parts = SpeechParts.split(text)
             partsText = text
@@ -769,6 +792,7 @@ class ThaanaSpeechActivity : Activity() {
                 if (problem != null) { joined.delete(); fail("The parts could not be joined: $problem."); return@runOnUiThread }
                 clearPartFiles()
                 parts = emptyList(); partIndex = 0
+                audioPrefs.edit().remove("resumeText").remove("resumeIndex").remove("resumeParts").apply()
                 useNewSpeech(joined)
             }
         }.start()
@@ -1009,7 +1033,13 @@ class ThaanaSpeechActivity : Activity() {
             media != null -> "Regenerate speech"
             else -> "Generate speech"
         }
-        if (parts.size > 1 && partIndex > 0) { say("$message Parts 1 to $partIndex are kept; press Retry to continue."); return }
+        if (parts.size > 1 && partIndex > 0) {
+            // Remember finished parts across app restarts and updates.
+            audioPrefs.edit().putString("resumeText", partsText).putInt("resumeIndex", partIndex)
+                .putString("resumeParts", org.json.JSONArray(parts).toString()).apply()
+            say("$message " + (if (partIndex == 1) "Part 1 is kept" else "Parts 1 to $partIndex are kept") + "; press Retry to continue.")
+            return
+        }
         say(message)
     }
 
