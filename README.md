@@ -6,6 +6,7 @@
 - When Thaana AI reports it could not generate a part (credits refunded), the app retries it once automatically, then splits that part in two and continues; only then does it stop with Retry from part N. Old error messages on the page are ignored.
 - Settings tabs are pressed like a real tap, so the History tab opens for the history report.
 - The usage line shortens Thaana AI's cost line to "cost n credits".
+- **Inspect a web page** (home screen): enter any HTTPS address; the page loads with the saved sign-ins and its headings, tabs, buttons, fields, links, repeated lists (summarised, first line only), media, dialogs and counters are listed in short lines. Tap a button, tab, link or list item to press it on the page (always confirmed), then it is inspected again. Copy report and Show page are included.
 
 ## v2.37 long text in parts, joined into one audio
 

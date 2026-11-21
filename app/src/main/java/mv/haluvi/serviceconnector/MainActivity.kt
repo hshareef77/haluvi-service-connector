@@ -51,6 +51,7 @@ class MainActivity : Activity() {
         ui("Haluvi Service Connector")
         button("Faseyha: recharge, packages and bills") { faseyha() }
         button("Thaana AI: text to speech") { thaana() }
+        button("Inspect a web page") { startActivity(Intent(this, PageInspectorActivity::class.java)) }
         button("Other saved websites") { services() }
         button("Settings and privacy") { settingsScreen() }
         button("About") { about() }
