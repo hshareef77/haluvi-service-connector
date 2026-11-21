@@ -285,7 +285,7 @@ class ThaanaSpeechActivity : Activity() {
     private companion object {
         const val PICK_TEXT = 41
         const val SAVE_AUDIO = 42
-        const val MAX_TEXT = 20_000
+        const val MAX_TEXT = 200_000
     }
 
     private lateinit var screen: EngineScreen
@@ -342,7 +342,7 @@ class ThaanaSpeechActivity : Activity() {
             override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
             override fun afterTextChanged(s: android.text.Editable?) { textChanged() }
         })
-        screen.button("Attach text file") { pickTextFile() }
+        screen.button("Attach file: text, Word or PDF") { pickTextFile() }
         voiceButton = screen.button("Voice: loading") { chooseVoice() }
         voicePanel = screen.section()
         generateButton = screen.button("Generate speech") { generate() }
@@ -1086,7 +1086,7 @@ class ThaanaSpeechActivity : Activity() {
 
     private fun pickTextFile() {
         startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE)
-            .setType("text/*"), PICK_TEXT)
+            .setType("*/*").putExtra(Intent.EXTRA_MIME_TYPES, DocumentText.MIME_TYPES), PICK_TEXT)
     }
 
     @Deprecated("Deprecated in Java")
@@ -1097,9 +1097,18 @@ class ThaanaSpeechActivity : Activity() {
         try {
             when (requestCode) {
                 PICK_TEXT -> {
-                    val text = contentResolver.openInputStream(uri)?.use { it.readBytes().toString(Charsets.UTF_8) }.orEmpty()
-                    input.setText(text.take(MAX_TEXT))
-                    say(if (text.length > MAX_TEXT) "Attached the first $MAX_TEXT characters of the file." else "Text attached: ${text.length} characters.")
+                    say("Reading the file…")
+                    Thread {
+                        val result = DocumentText.read(this, uri)
+                        runOnUiThread {
+                            val text = result.text
+                            if (text == null) { say(result.problem ?: "The file could not be read."); return@runOnUiThread }
+                            input.setText(text.take(MAX_TEXT))
+                            say((if (text.length > MAX_TEXT) "Attached the first $MAX_TEXT characters of the ${result.kind}."
+                                else "Attached ${result.kind}: ${text.length} characters.") +
+                                if (result.kind.startsWith("PDF")) " Check the text: some PDFs store Thaana letters out of order." else "")
+                        }
+                    }.start()
                 }
                 SAVE_AUDIO -> writeAudio(uri)
             }

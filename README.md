@@ -1,5 +1,11 @@
 # Haluvi Service Connector
 
+## v2.41 attach Word and PDF files
+
+Confirmed on the phone with 2.40: a 12,925-character text was generated in two parts and joined into one complete audio file.
+
+**Attach file: text, Word or PDF** reads plain text (UTF-8 or UTF-16), Word .docx (paragraphs kept, so long text splits between paragraphs) and PDFs that contain real text (via the pdfbox-android library; certificate-encrypted PDFs are not supported). Old Word .doc files and scanned PDFs are refused with an explanation. Thaana text extracted from some PDFs may come out in the wrong order, so the app asks you to check it. Attached text can be up to 200,000 characters.
+
 ## v2.40 Regenerate Speech and resumable parts
 
 Confirmed on the phone with 2.39: part 1 of a 12,925-character text generated (8 minutes 20 seconds) and part 2 was entered correctly. After a generation Thaana AI renames its button to "Regenerate Speech", which the app did not recognise, so it stopped and kept part 1. Both names are now accepted. Finished parts and the resume point are remembered across app restarts and updates; parts left by an earlier version are offered as "Continue from part N" (or Start over).
