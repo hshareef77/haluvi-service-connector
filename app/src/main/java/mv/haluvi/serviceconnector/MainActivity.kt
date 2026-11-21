@@ -49,12 +49,26 @@ class MainActivity : Activity() {
 
     private fun home() {
         ui("Haluvi Service Connector")
-        button("Faseyha payments") { startActivity(Intent(this, FaseyhaAssistActivity::class.java)) }
-        button("Faseyha Wallet") { startActivity(Intent(this, FaseyhaWalletActivity::class.java)) }
-        button("Faseyha website and sign in") { openFaseyhaWebsite() }
+        button("Faseyha: recharge, packages and bills") { faseyha() }
+        button("Thaana AI: text to speech") { thaana() }
         button("Other saved websites") { services() }
         button("Settings and privacy") { settingsScreen() }
         button("About") { about() }
+    }
+
+    private fun faseyha() {
+        ui("Faseyha")
+        button("Back to home") { home() }
+        button("Payments") { startActivity(Intent(this, FaseyhaAssistActivity::class.java)) }
+        button("Wallet") { startActivity(Intent(this, FaseyhaWalletActivity::class.java)) }
+        button("Website and sign in") { openFaseyhaWebsite() }
+    }
+
+    private fun thaana() {
+        ui("Thaana AI")
+        button("Back to home") { home() }
+        button("Text to speech") { startActivity(Intent(this, ThaanaSpeechActivity::class.java)) }
+        button("Website and sign in") { openThaanaWebsite() }
     }
 
     // ---------- other saved services ----------
@@ -137,7 +151,9 @@ class MainActivity : Activity() {
         ui("Settings and privacy")
         button("Back") { home() }
         info("Everything is stored only on this phone. The Faseyha sign-in stays in this app's private browser storage. The app keeps a log of payments it sent and receipt details it read; it never stores passwords.")
-        button("Sign out of websites") {
+        button("Sign out of Faseyha") { confirmSignOut("Faseyha", FaseyhaSite.BASE) }
+        button("Sign out of Thaana AI") { confirmSignOut("Thaana AI", ThaanaSite.BASE) }
+        button("Sign out of all websites") {
             AlertDialog.Builder(this).setTitle("Sign out of all websites?")
                 .setMessage("This removes cookies, site storage and cache for every website in this app, including Faseyha.")
                 .setPositiveButton("Sign out") { _, _ ->
@@ -161,6 +177,28 @@ class MainActivity : Activity() {
                 .setPositiveButton("Remove") { _, _ -> prefs.edit().remove("entries").apply(); home() }
                 .setNegativeButton("Cancel", null).show()
         }
+    }
+
+    private fun confirmSignOut(name: String, base: String) {
+        AlertDialog.Builder(this).setTitle("Sign out of $name?")
+            .setMessage("Other websites stay signed in.")
+            .setPositiveButton("Sign out") { _, _ -> signOutOf(base); showMessage("Signed out of $name.") }
+            .setNegativeButton("Cancel", null).show()
+    }
+
+    /** Expires one site's cookies and deletes its site storage, leaving other sites signed in. */
+    private fun signOutOf(base: String) {
+        val cookies = CookieManager.getInstance()
+        val host = android.net.Uri.parse(base).host ?: return
+        for (url in listOf(base, "https://www.$host")) {
+            cookies.getCookie(url)?.split(";")?.map { it.substringBefore("=").trim() }?.filter { it.isNotEmpty() }?.forEach { name ->
+                cookies.setCookie(url, "$name=; Max-Age=0; Path=/; Secure")
+                cookies.setCookie(url, "$name=; Max-Age=0; Path=/; Secure; Domain=$host")
+            }
+        }
+        cookies.flush()
+        WebStorage.getInstance().deleteOrigin(base)
+        WebStorage.getInstance().deleteOrigin("https://www.$host")
     }
 
     private fun about() {

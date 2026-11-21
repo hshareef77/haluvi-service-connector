@@ -20,12 +20,22 @@ import android.widget.TextView
 import org.json.JSONObject
 
 /**
- * A Faseyha browser the app drives in the background. It shares the signed-in
- * cookie session with the visible website screen, stays on faseyha.net and is
- * hidden from TalkBack unless the person chooses to show the provider page.
+ * A website browser the app drives in the background (Faseyha by default). It shares
+ * the signed-in cookie session with the visible website screen, stays on its own
+ * site ([base] and its subdomains) and is hidden from TalkBack unless the person
+ * chooses to show the page.
  */
 @SuppressLint("SetJavaScriptEnabled")
-class FaseyhaEngine(context: Context, private val onLoaded: (String) -> Unit) {
+class FaseyhaEngine(context: Context, private val base: String = FaseyhaSite.BASE, private val onLoaded: (String) -> Unit) {
+    private val host = android.net.Uri.parse(base).host?.lowercase() ?: ""
+
+    /** True for HTTPS addresses on this engine's own site. */
+    fun allowed(url: String?): Boolean {
+        val uri = android.net.Uri.parse(url ?: return false)
+        val h = uri.host?.lowercase() ?: return false
+        return uri.scheme == "https" && host.isNotEmpty() && (h == host || h.endsWith(".$host"))
+    }
+
     val web: WebView = WebView(context)
     private var destroyed = false
 
@@ -43,7 +53,7 @@ class FaseyhaEngine(context: Context, private val onLoaded: (String) -> Unit) {
         web.webChromeClient = WebChromeClient()
         web.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest) =
-                !FaseyhaSite.trustedUrl(request.url.toString())
+                !allowed(request.url.toString())
 
             override fun onPageFinished(view: WebView, url: String) {
                 CookieManager.getInstance().flush()
@@ -53,10 +63,10 @@ class FaseyhaEngine(context: Context, private val onLoaded: (String) -> Unit) {
     }
 
     val url: String get() = web.url ?: ""
-    val path: String? get() = FaseyhaSite.pathOf(web.url)
+    val path: String? get() = web.url?.takeIf { allowed(it) }?.let { android.net.Uri.parse(it).path?.ifEmpty { "/" } ?: "/" }
 
-    fun open(path: String) { if (!destroyed) web.loadUrl(FaseyhaSite.BASE + path) }
-    fun openUrl(url: String) { if (!destroyed && FaseyhaSite.trustedUrl(url)) web.loadUrl(url) }
+    fun open(path: String) { if (!destroyed) web.loadUrl(base + path) }
+    fun openUrl(url: String) { if (!destroyed && allowed(url)) web.loadUrl(url) }
     fun reload() { if (!destroyed) web.reload() }
 
     fun eval(script: String, done: (JSONObject?) -> Unit) {

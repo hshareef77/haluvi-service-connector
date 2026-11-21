@@ -1,5 +1,12 @@
 # Haluvi Service Connector
 
+## v2.31 service groups and Thaana AI (first step)
+
+- Home lists services: **Faseyha** (Payments, Wallet, Website and sign in) and **Thaana AI** (Text to speech, Website and sign in). Faseyha screens and payment logic are unchanged.
+- Thaana AI signs in on its own website screen; its session is kept separately from Faseyha. Settings can sign out of Faseyha or Thaana AI separately, or of all websites.
+- Thaana AI text to speech opens the signed-in page in the background and offers **Copy page report** (text boxes, voices and options, settings and limits, buttons, file upload, audio and downloads; typed text and passwords excluded). The native controls are built from that report in the next version.
+- The background browser engine is now locked to whichever site it serves (faseyha.net or thaana.ai).
+
 ## v2.30 correct recipient from Faseyha tax invoices
 
 Based on a real Faseyha tax invoice: the recipient is read from the item row (the line under the service name, for example "Dhiraagu Reload / 7979123"), never from "Bill to", which is the Faseyha account holder. Version 2.29 could show the account holder's number as the recipient; receipts saved by earlier versions are discarded and read again.

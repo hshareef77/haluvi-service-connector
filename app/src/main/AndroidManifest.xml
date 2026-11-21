@@ -5,6 +5,7 @@
         <activity android:name=".FaseyhaWalletActivity" android:exported="false" />
         <activity android:name=".FaseyhaAssistActivity" android:exported="false" />
         <activity android:name=".WebsiteActivity" android:exported="false" />
+        <activity android:name=".ThaanaSpeechActivity" android:exported="false" />
         <activity android:name=".MainActivity" android:exported="true">
             <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
         </activity>

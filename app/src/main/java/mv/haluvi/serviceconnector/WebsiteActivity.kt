@@ -63,7 +63,8 @@ class WebsiteActivity : Activity() {
                     CookieManager.getInstance().flush()
                     val uri = Uri.parse(url)
                     address.text = "Page: " + (uri.host ?: "") + (uri.path ?: "") +
-                        if (uri.host != null && !FaseyhaSite.trusted(uri.host) && start.contains(FaseyhaSite.HOST)) ". Outside Faseyha; check the address before signing in." else ""
+                        Uri.parse(start).host.let { site -> if (site != null && uri.host != null && uri.host != site && uri.host?.endsWith(".$site") != true)
+                            ". Outside $site; check the address before signing in." else "" }
                 }
             }
         }
