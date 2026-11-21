@@ -100,7 +100,8 @@ return JSON.stringify({path:location.pathname,title:document.title.slice(0,80),s
     .map(x=>(H.tidy(x.innerText)||x.getAttribute('aria-label')||'(no label)').slice(0,60)+' -> '+(x.getAttribute('href')||'').split(':')[0]+
       (x.hasAttribute('download')?' [download '+(x.getAttribute('download')||'')+']':'')).slice(0,10),
   progress:all('progress,[role="progressbar"],[aria-busy="true"]').map(x=>x.tagName.toLowerCase()+' '+(x.getAttribute('aria-valuenow')||x.value||'')).slice(0,5),
-  alerts:H.all('[role="alert"],[role="status"],[aria-live]').map(x=>H.tidy(x.innerText).slice(0,160)).filter(Boolean).slice(0,5)});""")
+  alerts:H.all('[role="alert"],[role="status"],[aria-live]').map(x=>H.tidy(x.innerText).slice(0,160)).filter(Boolean).slice(0,5),
+  usage:[...new Set(H.body().split(/\n/).map(H.tidy).filter(x=>x&&x.length<80&&(/\b(characters?|chars|credits?)\b/i.test(x)||/^[\d,]+\s*\/\s*[\d,]+$/.test(x))))].slice(0,6)});""")
 
     /** Types text into Thaana's editor the way typing would, so the page enables Generate. */
     fun setText(text: String) = FaseyhaSite.script("""
@@ -122,7 +123,8 @@ const lines=H.body().split(/\n/).map(H.tidy).filter(x=>x&&x.length<200);
 return JSON.stringify({signedOut:H.signedOut(),voice:voiceButton()?H.label(voiceButton()):'',
   generate:gen.length,generateEnabled:gen.filter(H.enabled).length,audio:audio,
   busy:H.buttons().some(x=>/generating|cancel|stop/i.test(H.label(x)))||H.all('[aria-busy="true"],[role="progressbar"],progress').length>0,
-  messages:lines.filter(x=>/error|failed|insufficient|credit|limit|quota|too long|try again/i.test(x)).slice(0,3)});""")
+  usage:[...new Set(lines.filter(x=>x.length<80&&(/\b(characters?|chars|credits?)\b/i.test(x)||/^[\d,]+\s*\/\s*[\d,]+$/.test(x))))].slice(0,4),
+  messages:lines.filter(x=>/error|failed|insufficient|not enough|exceed|too long|try again/i.test(x)).slice(0,3)});""")
 
     val GENERATE = FaseyhaSite.script("""
 const m=H.buttons().filter(x=>/^generate speech$/i.test(H.label(x))&&H.enabled(x));
@@ -271,6 +273,9 @@ class ThaanaSpeechActivity : Activity() {
     private var audioFile: File? = null
     private var audioType = "audio/mpeg"
     private var media: MediaPlayer? = null
+    private lateinit var usageText: TextView
+    private var siteUsage = ""
+    private var syncToken = 0
     private var previewPlayer: MediaPlayer? = null
     private lateinit var voicePanel: LinearLayout
     private lateinit var speedButton: Button
@@ -286,6 +291,12 @@ class ThaanaSpeechActivity : Activity() {
             minLines = 4; maxLines = 12; gravity = Gravity.TOP or Gravity.START
         }
         screen.panel.addView(input)
+        usageText = screen.text("0 characters", 15f)
+        input.addTextChangedListener(object : android.text.TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun afterTextChanged(s: android.text.Editable?) { textChanged() }
+        })
         screen.button("Attach text file") { pickTextFile() }
         voiceButton = screen.button("Voice: loading") { chooseVoice() }
         voicePanel = screen.section()
@@ -324,6 +335,31 @@ class ThaanaSpeechActivity : Activity() {
 
     private fun say(text: String) { status.text = text }
 
+    private fun showUsage() {
+        val count = input.text.trim().length
+        usageText.text = "$count characters" + if (siteUsage.isNotBlank()) ". Thaana AI: $siteUsage" else ""
+    }
+
+    /** Counts locally at once; after typing pauses, gives the text to Thaana AI and reads its counter. */
+    private fun textChanged() {
+        showUsage()
+        val token = ++syncToken
+        usageText.postDelayed({
+            if (token != syncToken || !pageReady || busy) return@postDelayed
+            page.eval(ThaanaSite.setText(input.text.toString().trim())) {
+                page.after(700) { if (token == syncToken) readUsage() }
+            }
+        }, 1500)
+    }
+
+    private fun readUsage() {
+        page.eval(ThaanaSite.STATE) { r ->
+            val a = r?.optJSONArray("usage")
+            siteUsage = (0 until (a?.length() ?: 0)).joinToString(", ") { a!!.optString(it) }
+            showUsage()
+        }
+    }
+
     private fun reloadPage() {
         pageReady = false
         say("Reloading Thaana AI…")
@@ -340,6 +376,7 @@ class ThaanaSpeechActivity : Activity() {
                     r != null && r.optInt("generate") > 0 -> {
                         pageReady = true
                         updateVoice(r.optString("voice"))
+                        if (input.text.isNotBlank()) textChanged() else readUsage()
                         if (!busy) say("Ready. Type or attach text, then press Generate speech.")
                     }
                     attempt < 12 -> onLoaded(attempt + 1)
@@ -809,7 +846,7 @@ class ThaanaSpeechActivity : Activity() {
                 append("Thaana AI page report\nApp version: ").append(appVersion()).append('\n')
                 append("Path: ").append(r.optString("path")).append("; signed out: ").append(r.optBoolean("signedOut")).append('\n')
                 append("App status: ").append(status.text).append('\n')
-                for (key in listOf("headings", "textBoxes", "inputs", "selects", "widgets", "buttons", "media", "downloads", "progress", "alerts")) {
+                for (key in listOf("headings", "textBoxes", "inputs", "selects", "widgets", "buttons", "media", "downloads", "progress", "alerts", "usage")) {
                     val list = r.optJSONArray(key) ?: continue
                     if (list.length() == 0) continue
                     append('\n').append(key.replaceFirstChar { it.uppercase() }).append(":\n")
