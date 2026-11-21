@@ -459,7 +459,7 @@ class ThaanaSpeechActivity : Activity() {
                 contentDescription = "Preview $info"
                 tag = info
                 // One button: tap to play the preview, tap again to stop it.
-                setOnClickListener { if (previewing == v.name) { stopPreview(); say("${v.name} preview stopped.") } else previewVoice(v.name, v.preview) }
+                setOnClickListener { if (previewing == v.name) stopPreview() else previewVoice(v.name, v.preview) }
             }
             previewButtons[v.name] = voiceRow
             row.addView(voiceRow, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
@@ -480,11 +480,8 @@ class ThaanaSpeechActivity : Activity() {
     private val previewButtons = mutableMapOf<String, Button>()
 
     /** Marks which voice is previewing so its button reads as Stop. */
-    private fun setPreviewing(name: String?) {
-        previewing?.let { old -> previewButtons[old]?.let { it.contentDescription = "Preview " + it.tag; it.text = it.tag as String } }
-        previewing = name
-        name?.let { n -> previewButtons[n]?.let { it.contentDescription = "Stop preview, " + it.tag; it.text = "Stop: " + it.tag } }
-    }
+    // Previews are silent: the button's label never changes, so TalkBack does not talk over the sample.
+    private fun setPreviewing(name: String?) { previewing = name }
 
     private fun closeVoicePanel() {
         stopPreview()
@@ -506,7 +503,6 @@ class ThaanaSpeechActivity : Activity() {
         if (!hasPreview) { say("Thaana AI has no preview for $name."); return }
         stopPreview()
         setPreviewing(name)
-        say("Loading the $name preview…")
         fun attempt(reopened: Boolean) {
             page.eval(ThaanaSite.voicePreview(name)) { r ->
                 if (r?.optString("reason") == "closed" && !reopened) { withVoiceList { attempt(true) }; return@eval }
@@ -519,7 +515,7 @@ class ThaanaSpeechActivity : Activity() {
                             val src = p?.optString("src").orEmpty()
                             when {
                                 src.startsWith("https://") -> { page.eval(ThaanaSite.STOP_MEDIA) {}; playPreview(name, src) }
-                                src.isNotBlank() -> say("Playing the $name preview.")
+                                src.isNotBlank() -> Unit // playing inside the page
                                 n < 10 -> find(n + 1)
                                 else -> { setPreviewing(null); say("The $name preview did not start. Use More options, Copy voice list report.") }
                             }
@@ -539,8 +535,8 @@ class ThaanaSpeechActivity : Activity() {
         try {
             previewPlayer = MediaPlayer().apply {
                 setDataSource(this@ThaanaSpeechActivity, android.net.Uri.parse(src), headers)
-                setOnPreparedListener { it.start(); say("Playing the $name preview.") }
-                setOnCompletionListener { if (previewing == name) setPreviewing(null); say("$name preview finished.") }
+                setOnPreparedListener { if (previewing == name) it.start() }
+                setOnCompletionListener { if (previewing == name) setPreviewing(null) }
                 setOnErrorListener { _, _, _ -> if (previewing == name) setPreviewing(null); say("The $name preview could not be played."); true }
                 prepareAsync()
             }
@@ -822,9 +818,21 @@ class ThaanaSpeechActivity : Activity() {
                     say(if (text.length > MAX_TEXT) "Attached the first $MAX_TEXT characters of the file." else "Text attached: ${text.length} characters.")
                 }
                 SAVE_AUDIO -> {
-                    val file = audioFile ?: return
-                    contentResolver.openOutputStream(uri)?.use { out -> file.inputStream().use { it.copyTo(out) } }
-                    say("Audio saved.")
+                    // Android may recreate this screen while its save dialog is open; find the audio again.
+                    val file = audioFile?.takeIf { it.exists() && it.length() > 0 }
+                        ?: cacheDir.listFiles { f -> f.name.startsWith("thaana-speech.") && f.length() > 0 }?.maxByOrNull { it.lastModified() }
+                    if (file == null) {
+                        try { android.provider.DocumentsContract.deleteDocument(contentResolver, uri) } catch (_: Exception) {}
+                        say("The generated audio is no longer available. Generate it again, then save.")
+                        return
+                    }
+                    var written = 0L
+                    contentResolver.openOutputStream(uri, "wt")?.use { out ->
+                        file.inputStream().use { written = it.copyTo(out) }
+                        out.flush()
+                    }
+                    say(if (written > 0) "Audio saved, " + android.text.format.Formatter.formatShortFileSize(this, written) + "."
+                        else "The audio could not be written to that location.")
                 }
             }
         } catch (e: Exception) {

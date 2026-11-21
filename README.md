@@ -1,5 +1,9 @@
 # Haluvi Service Connector
 
+## v2.34 silent voice previews and reliable audio saving
+
+Confirmed on the phone with 2.33: generation, download, playback, speed, voice previews (one button to play and stop) and Choose work. Previews are now silent: no status or label changes are announced over the sample. Save audio finds the generated audio again if Android recreated the screen during the save dialog, writes it fully and reports the size; previously the saved file could be 0 bytes.
+
 ## v2.33 Thaana AI audio download and playback speed
 
 Confirmed on the phone with 2.32: text entry, Voice Library (54 voices with descriptions and preview buttons) and generation work. Copying the result failed because Thaana AI serves audio from a separate server that the page script may not read. The app now downloads that address itself (with the signed-in session), falling back to the page copy for in-page audio. The native player adds **Speed** (0.75x to 2x). **Voice** now lists every voice as a row: the voice button (name, male/female, description) plays its preview with Android's own player and stops it when tapped again; **Choose** next to it selects the voice. Close voices is at the top. Under the text box the app shows its own character count and, after typing pauses, Thaana AI's character and credit counter. The Settings panel contains only the Voice Library, so voice choice is the native setting.
