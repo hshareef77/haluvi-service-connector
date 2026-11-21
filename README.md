@@ -1,5 +1,12 @@
 # Haluvi Service Connector
 
+## v2.38 reliable long-text parts and History tab
+
+- Each part now replaces the whole Thaana AI editor (previously the editor could still hold the full 12,751-character text) and its length is verified before generating.
+- When Thaana AI reports it could not generate a part (credits refunded), the app retries it once automatically, then splits that part in two and continues; only then does it stop with Retry from part N. Old error messages on the page are ignored.
+- Settings tabs are pressed like a real tap, so the History tab opens for the history report.
+- The usage line shortens Thaana AI's cost line to "cost n credits".
+
 ## v2.37 long text in parts, joined into one audio
 
 - Text over 9,000 characters is split between paragraphs, then after sentences, then at spaces (never inside a word; no text lost). Parts are generated one after another automatically ("Part 2 of 3: generating…") and joined into one audio file; WAV parts are joined into one valid WAV.

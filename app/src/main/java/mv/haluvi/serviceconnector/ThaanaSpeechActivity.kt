@@ -110,10 +110,13 @@ if(!eds.length)return JSON.stringify({ok:false,reason:'Thaana AI did not show it
 const ed=eds[0];ed.focus();
 if(ed.tagName==='TEXTAREA'){Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(ed,value);
   ed.dispatchEvent(new Event('input',{bubbles:true}));}
-else{document.execCommand('selectAll',false,null);
+else{const sel=window.getSelection(),range=document.createRange();range.selectNodeContents(ed);sel.removeAllRanges();sel.addRange(range);
   if(!document.execCommand('insertText',false,value)){ed.textContent=value;ed.dispatchEvent(new InputEvent('input',{bubbles:true}));}}
 const got=H.tidy(ed.innerText||ed.value||''),want=H.tidy(value);
-return JSON.stringify({ok:got===want||got.startsWith(want.slice(0,40)),editors:eds.length});""", "value" to text)
+// The whole editor must now hold this text: same start and nearly the same length.
+const same=got===want||(got.startsWith(want.slice(0,40))&&Math.abs(got.length-want.length)<=Math.max(20,want.length*0.02));
+return JSON.stringify({ok:same,got:got.length,want:want.length,editors:eds.length,
+  reason:same?'':'Thaana AI\'s text box holds '+got.length+' characters instead of '+want.length+'.'});""", "value" to text)
 
     /** Current speaker, Generate state, audio players and messages. */
     val STATE = FaseyhaSite.script("""$POPUP
@@ -197,7 +200,10 @@ return JSON.stringify({ok:true});""")
     fun panelTab(name: String) = FaseyhaSite.script("""$POPUP
 for(const r of panelRoots()){
   const t=Array.from(r.querySelectorAll('[role="tab"],button')).filter(H.visible).find(x=>H.low(H.label(x))===H.low(wanted));
-  if(t){t.click();return JSON.stringify({ok:true});}
+  if(t){const o={bubbles:true,cancelable:true,button:0,pointerType:'touch',isPrimary:true};
+    t.dispatchEvent(new PointerEvent('pointerdown',o));t.dispatchEvent(new MouseEvent('mousedown',o));t.focus();
+    t.dispatchEvent(new PointerEvent('pointerup',o));t.dispatchEvent(new MouseEvent('mouseup',o));t.click();
+    return JSON.stringify({ok:true,active:H.isActive(t)});}
 }
 return JSON.stringify({ok:false});""", "wanted" to name)
 
@@ -290,6 +296,8 @@ class ThaanaSpeechActivity : Activity() {
     private var parts: List<String> = emptyList()
     private var partsText = ""
     private var partIndex = 0
+    private var partRetries = 0
+    private var oldMessages: Set<String> = emptySet()
     private lateinit var clearButton: Button
     private lateinit var clearSlot: LinearLayout
     private lateinit var saveButton: Button
@@ -398,7 +406,9 @@ class ThaanaSpeechActivity : Activity() {
     private fun readUsage() {
         page.eval(ThaanaSite.STATE) { r ->
             val a = r?.optJSONArray("usage")
-            siteUsage = (0 until (a?.length() ?: 0)).joinToString(", ") { a!!.optString(it) }
+            siteUsage = (0 until (a?.length() ?: 0)).map { a!!.optString(it) }
+                .map { line -> Regex("^([\\d.,]+)\\s*cost.*").matchEntire(line)?.let { "cost ${it.groupValues[1]} credits" } ?: line }
+                .joinToString(", ")
             showUsage()
         }
     }
@@ -642,6 +652,7 @@ class ThaanaSpeechActivity : Activity() {
             parts = SpeechParts.split(text)
             partsText = text
             partIndex = 0
+            partRetries = 0
         }
         busy = true
         val token = ++run
@@ -657,11 +668,36 @@ class ThaanaSpeechActivity : Activity() {
         generateButton.text = partPrefix() + "Generating…"
         page.eval(ThaanaSite.STATE) { before ->
             val oldAudio = before?.optJSONArray("audio")?.let { a -> (0 until a.length()).map { a.optString(it) }.toSet() } ?: emptySet()
+            oldMessages = before?.optJSONArray("messages")?.let { a -> (0 until a.length()).map { a.optString(it) }.toSet() } ?: emptySet()
             page.eval(ThaanaSite.setText(parts[partIndex])) { r ->
                 if (token != run) return@eval
                 if (r?.optBoolean("ok") != true) { fail(r?.optString("reason")?.ifBlank { null } ?: "The text could not be entered on Thaana AI."); return@eval }
                 page.after(700) { pressGenerate(token, oldAudio, 0) }
             }
+        }
+    }
+
+    /**
+     * Thaana AI could not generate this part (it refunds the credits). Try the same part
+     * once more, then split it into two smaller parts, before stopping.
+     */
+    private fun partFailed(token: Int, message: String) {
+        if (token != run) return
+        partRetries++
+        val part = parts[partIndex]
+        when {
+            partRetries == 1 -> {
+                say(partPrefix() + "Thaana AI could not generate it (credits refunded). Trying again…")
+                page.after(3000) { generatePart(token) }
+            }
+            partRetries == 2 && part.length > 1500 -> {
+                val halves = SpeechParts.split(part, part.length / 2 + 200)
+                parts = parts.take(partIndex) + halves + parts.drop(partIndex + 1)
+                partRetries = 0
+                say("Splitting part ${partIndex + 1} into ${halves.size} smaller parts and continuing. Now ${parts.size} parts in total.")
+                page.after(3000) { generatePart(token) }
+            }
+            else -> { partRetries = 0; fail("Thaana AI says: $message") }
         }
     }
 
@@ -672,6 +708,7 @@ class ThaanaSpeechActivity : Activity() {
         dest.delete()
         if (!file.renameTo(dest)) { file.copyTo(dest, overwrite = true); file.delete() }
         partIndex++
+        partRetries = 0
         if (partIndex < parts.size) {
             generateButton.text = partPrefix() + "starting…"
             page.after(1500) { generatePart(token) }
@@ -708,7 +745,8 @@ class ThaanaSpeechActivity : Activity() {
             val messages = s?.optJSONArray("messages")?.let { a -> (0 until a.length()).map { a.optString(it) } }.orEmpty()
             when {
                 audio.any { it !in oldAudio } -> { say("Speech generated. Preparing playback…"); fetchAudio(token) }
-                messages.isNotEmpty() && attempt > 2 && s?.optBoolean("busy") != true -> fail("Thaana AI says: ${messages.first()}")
+                messages.any { it !in oldMessages } && attempt > 2 && s?.optBoolean("busy") != true ->
+                    partFailed(token, messages.first { it !in oldMessages })
                 attempt >= 400 -> fail("Speech was not ready after ten minutes. Use More options, Copy page report, and send it.")
                 else -> {
                     val seconds = (attempt + 1) * 3 / 2
